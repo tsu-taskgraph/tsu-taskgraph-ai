@@ -11,10 +11,6 @@ from app.providers.utils import (
 from app.schemas.common import ProviderConfig
 
 
-def _build_params(settings: dict[str, Any] | None) -> dict[str, Any]:
-    return map_common_params(settings)
-
-
 class OpenAICompatibleProvider(BaseProvider):
     BASE_URL = "https://api.openai.com/v1"
     DEFAULT_MODEL = "gpt-4o"
@@ -30,6 +26,9 @@ class OpenAICompatibleProvider(BaseProvider):
             timeout=60.0,
         )
 
+    def build_params(self, settings: dict[str, Any] | None) -> dict[str, Any]:
+        return map_common_params(settings)
+
     async def _chat_completion(
         self,
         messages: list[dict[str, str]],
@@ -41,7 +40,7 @@ class OpenAICompatibleProvider(BaseProvider):
             "messages": messages,
         }
         settings_dict = self.config.settings.model_dump(by_alias=True) if self.config.settings else None
-        payload.update(_build_params(settings_dict))
+        payload.update(self.build_params(settings_dict))
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
@@ -51,8 +50,10 @@ class OpenAICompatibleProvider(BaseProvider):
             data = response.json()
         except httpx.HTTPStatusError as e:
             handle_provider_error(str(e), e.response.status_code)
+            return {}
         except httpx.RequestError as e:
             handle_provider_error(str(e))
+            return {}
 
         content = data["choices"][0]["message"]["content"]
         return extract_json(content)

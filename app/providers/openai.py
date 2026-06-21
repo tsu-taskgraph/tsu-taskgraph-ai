@@ -11,8 +11,8 @@ class OpenAIProvider(OpenAICompatibleProvider):
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
 
-    def _build_params(self, settings: dict[str, Any] | None) -> dict[str, Any]:
-        params = super()._build_params(settings)
+    def build_params(self, settings: dict[str, Any] | None) -> dict[str, Any]:
+        params = super().build_params(settings)
         if settings:
             reasoning_effort = settings.get("reasoningEffort")
             if reasoning_effort and self.config.model and self.config.model.startswith("o"):
