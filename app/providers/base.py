@@ -34,6 +34,25 @@ class BaseProvider(ABC):
     ) -> dict[str, Any]:
         ...
 
+    async def _call_llm_safe(
+            self,
+            system: str,
+            user: str,
+            json_mode: bool = True,
+    ) -> dict[str, Any]:
+        try:
+            return await self._call_llm(system, user, json_mode)
+        except ValueError as e:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "LlmInvalidJsonResponse",
+                    "message": f"AI provider returned invalid JSON: {e}",
+                    "provider": self.config.provider
+                }
+            )
+
     async def check(self) -> dict[str, Any]:
         if self.client is None:
             return {
@@ -60,7 +79,7 @@ class BaseProvider(ABC):
 
     async def generate_skeleton(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("skeleton", prompt_data)
-        result = await self._call_llm(system, user)
+        result = await self._call_llm_safe(system, user)
 
         from app.providers.utils import validate_and_clean_skeleton
         cleaned = validate_and_clean_skeleton(
@@ -87,7 +106,7 @@ class BaseProvider(ABC):
     async def enrich_task(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("enrich_task", prompt_data)
         task = prompt_data.get("task", {})
-        result = await self._call_llm(system, user)
+        result = await self._call_llm_safe(system, user)
         return {
             "taskId": task.get("taskId"),
             "checklist": result.get("checklist", []),
@@ -101,7 +120,7 @@ class BaseProvider(ABC):
 
     async def mutate_graph(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("mutate_graph", prompt_data)
-        result = await self._call_llm(system, user)
+        result = await self._call_llm_safe(system, user)
 
         from app.providers.utils import validate_and_clean_mutation
         cleaned = validate_and_clean_mutation(
@@ -123,7 +142,7 @@ class BaseProvider(ABC):
 
     async def smart_recovery(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("smart_recovery", prompt_data)
-        result = await self._call_llm(system, user)
+        result = await self._call_llm_safe(system, user)
 
         from app.providers.utils import validate_and_clean_mutation
 
@@ -152,7 +171,7 @@ class BaseProvider(ABC):
 
     async def generate_diagrams(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("diagrams", prompt_data)
-        result = await self._call_llm(system, user)
+        result = await self._call_llm_safe(system, user)
         return {
             "c4Code": result.get("c4Code"),
             "sequenceCode": result.get("sequenceCode"),
@@ -164,7 +183,7 @@ class BaseProvider(ABC):
     async def generate_wiki(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("wiki", prompt_data)
         task = prompt_data.get("task", {})
-        result = await self._call_llm(system, user)
+        result = await self._call_llm_safe(system, user)
         return {
             "title": result.get("title", task.get("taskTitle", "Wiki page")),
             "content": result.get("content", ""),

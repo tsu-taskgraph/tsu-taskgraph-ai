@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, status
 
 from app.core.security import require_internal_secret
+from app.core.exceptions import ErrorResponse
 from app.providers.registry import get_provider
 from app.schemas.diagrams import DiagramRequest, DiagramResponse
-from app.schemas.enrichment import EnrichTaskJobResponse, EnrichTaskRequest
+from app.schemas.enrichment import EnrichTaskRequest, EnrichTaskJobResponse
 from app.schemas.mutation import MutateGraphRequest, MutateGraphResponse
 from app.schemas.recovery import SmartRecoveryRequest, SmartRecoveryResponse
 from app.schemas.skeleton import GenerateSkeletonRequest, GenerateSkeletonResponse
@@ -11,8 +12,24 @@ from app.schemas.wiki import GenerateWikiRequest, GenerateWikiResponse
 
 router = APIRouter(dependencies=[Depends(require_internal_secret)])
 
+COMMON_AI_RESPONSES = {
+    400: {"model": ErrorResponse, "description": "Bad Request - Неверные входные данные"},
+    401: {"model": ErrorResponse, "description": "Unauthorized - Отсутствует или невалидный X-Internal-Secret или "
+                                                 "API-ключ ИИ"},
+    422: {"model": ErrorResponse, "description": "Unprocessable Entity - Ошибка валидации структуры или невалидный "
+                                                 "ответ ИИ"},
+    429: {"model": ErrorResponse, "description": "Too Many Requests - Превышен лимит запросов (Rate limit) у провайдера"},
+    502: {"model": ErrorResponse, "description": "Bad Gateway - Сбой ИИ-провайдера"},
+    504: {"model": ErrorResponse, "description": "Gateway Timeout - Превышено время ожидания ответа ИИ"},
+}
 
-@router.post("/skeleton", response_model=GenerateSkeletonResponse)
+
+@router.post(
+    "/skeleton",
+    response_model=GenerateSkeletonResponse,
+    responses=COMMON_AI_RESPONSES,
+    tags=["Graph Generation"]
+)
 async def generate_skeleton(body: GenerateSkeletonRequest) -> GenerateSkeletonResponse:
     provider = get_provider(body.provider_config)
     result = await provider.generate_skeleton(body.model_dump(by_alias=True))
@@ -23,6 +40,13 @@ async def generate_skeleton(body: GenerateSkeletonRequest) -> GenerateSkeletonRe
     "/enrich-task",
     response_model=EnrichTaskJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        400: {"model": ErrorResponse, "description": "Bad Request - Ошибка во входных данных"},
+        401: {"model": ErrorResponse, "description": "Unauthorized - Невалидный X-Internal-Secret"},
+        422: {"model": ErrorResponse, "description": "Unprocessable Entity - Ошибка валидации структуры запроса"},
+        503: {"model": ErrorResponse, "description": "Service Unavailable - Очередь Celery недоступна"},
+    },
+    tags=["Task Enrichment"]
 )
 async def enrich_task(body: EnrichTaskRequest) -> EnrichTaskJobResponse:
     import uuid
@@ -43,28 +67,48 @@ async def enrich_task(body: EnrichTaskRequest) -> EnrichTaskJobResponse:
     )
 
 
-@router.post("/mutate", response_model=MutateGraphResponse)
+@router.post(
+    "/mutate",
+    response_model=MutateGraphResponse,
+    responses=COMMON_AI_RESPONSES,
+    tags=["Graph Mutation"]
+)
 async def mutate_graph(body: MutateGraphRequest) -> MutateGraphResponse:
     provider = get_provider(body.provider_config)
     result = await provider.mutate_graph(body.model_dump(by_alias=True))
     return MutateGraphResponse(**result)
 
 
-@router.post("/smart-recovery", response_model=SmartRecoveryResponse)
+@router.post(
+    "/smart-recovery",
+    response_model=SmartRecoveryResponse,
+    responses=COMMON_AI_RESPONSES,
+    tags=["Smart Recovery"]
+)
 async def smart_recovery(body: SmartRecoveryRequest) -> SmartRecoveryResponse:
     provider = get_provider(body.provider_config)
     result = await provider.smart_recovery(body.model_dump(by_alias=True))
     return SmartRecoveryResponse(**result)
 
 
-@router.post("/diagrams", response_model=DiagramResponse)
+@router.post(
+    "/diagrams",
+    response_model=DiagramResponse,
+    responses=COMMON_AI_RESPONSES,
+    tags=["Diagrams"]
+)
 async def generate_diagrams(body: DiagramRequest) -> DiagramResponse:
     provider = get_provider(body.provider_config)
     result = await provider.generate_diagrams(body.model_dump(by_alias=True))
     return DiagramResponse(**result)
 
 
-@router.post("/wiki", response_model=GenerateWikiResponse)
+@router.post(
+    "/wiki",
+    response_model=GenerateWikiResponse,
+    responses=COMMON_AI_RESPONSES,
+    tags=["Wiki"]
+)
 async def generate_wiki(body: GenerateWikiRequest) -> GenerateWikiResponse:
     provider = get_provider(body.provider_config)
     result = await provider.generate_wiki(body.model_dump(by_alias=True))

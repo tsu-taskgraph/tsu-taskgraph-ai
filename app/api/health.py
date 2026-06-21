@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from app.config import get_settings
 from app.core.security import require_internal_secret
+from app.core.exceptions import ErrorResponse
 from app.providers.registry import get_provider
 from app.schemas.health import HealthResponse, ProviderCheckResponse, ProviderCheckRequest
 
@@ -18,6 +19,9 @@ async def health_check() -> HealthResponse:
     "/health/providers",
     response_model=ProviderCheckResponse,
     dependencies=[Depends(require_internal_secret)],
+    responses={
+        401: {"model": ErrorResponse, "description": "Unauthorized - Невалидный X-Internal-Secret"},
+    }
 )
 async def check_provider(body: ProviderCheckRequest) -> ProviderCheckResponse:
     provider = get_provider(body.provider_config)
