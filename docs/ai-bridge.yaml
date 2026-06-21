@@ -1,0 +1,1197 @@
+openapi: 3.1.0
+info:
+  title: TaskGraph — AI Service Bridge
+  description: |
+    Микросервис-мост на Python/FastAPI. Вызывается только из Core API.
+
+    ## Провайдеры
+
+    | Провайдер  | Тип      | Ключ | Web Search | Extended Thinking / Reasoning |
+    |------------|----------|------|------------|-------------------------------|
+    | gemini     | облако   | да   | да         | thinkingBudget                |
+    | openai     | облако   | да   | нет        | reasoningEffort (o1/o3/o4)    |
+    | anthropic  | облако   | да   | нет        | extendedThinking (claude-3-7+)|
+    | groq       | облако   | да   | нет        | groqReasoningFormat           |
+    | mistral    | облако   | да   | нет        | нет                           |
+    | ollama     | локально | нет  | нет        | зависит от модели             |
+
+    ## Безопасность
+    Сервис принимает запросы только с `X-Internal-Secret`.
+    API-ключи не логируются и не сохраняются.
+  version: 1.2.0
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+  - url: http://ai-service:8000
+    description: Docker internal
+
+tags:
+  - name: Graph Generation
+    description: Фаза 1 — скелет графа
+  - name: Task Enrichment
+    description: Фаза 2 — обогащение задач + Wiki-драфт
+  - name: Graph Mutation
+    description: Фаза 3 — патч-мутация
+  - name: Smart Recovery
+    description: Автоматическое разрешение конфликтов цикла
+  - name: Diagrams
+    description: Mermaid-диаграммы (Архитектурный рентген)
+  - name: Wiki
+    description: Генерация / регенерация Wiki-страниц
+  - name: Health
+
+components:
+  securitySchemes:
+    InternalSecret:
+      type: apiKey
+      in: header
+      name: X-Internal-Secret
+
+  schemas:
+    # ── Provider Config ────────────────────────
+    AiProviderType:
+      type: string
+      enum: [gemini, openai, anthropic, groq, mistral, ollama]
+
+    ProviderSettings:
+      type: object
+      description: |
+        Тонкие настройки провайдера — соответствуют полям AiProviderSettings
+        в Core API. Ненужные поля игнорируются адаптером провайдера.
+      properties:
+        temperature:
+          type: [number, "null"]
+          format: float
+        maxTokens:
+          type: [integer, "null"]
+        # Gemini
+        thinkingBudget:
+          type: [integer, "null"]
+          description: Бюджет thinking-токенов (Gemini 2.5+)
+        enableWebSearch:
+          type: [boolean, "null"]
+        # Anthropic
+        extendedThinking:
+          type: [boolean, "null"]
+        thinkingTokenBudget:
+          type: [integer, "null"]
+        # OpenAI
+        reasoningEffort:
+          oneOf:
+            - type: string
+              enum: [low, medium, high]
+            - type: "null"
+        # Groq
+        groqReasoningFormat:
+          oneOf:
+            - type: string
+              enum: [parsed, raw, hidden]
+            - type: "null"
+        # Ollama
+        ollamaNumCtx:
+          type: [integer, "null"]
+        ollamaNumGpu:
+          type: [integer, "null"]
+
+    ProviderConfig:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+        apiKey:
+          type: [string, "null"]
+          description: API-ключ пользователя. Обязателен для облачных провайдеров.
+        model:
+          type: [string, "null"]
+          description: Конкретная модель. Если null — используется дефолт провайдера.
+        ollamaBaseUrl:
+          type: [string, "null"]
+        settings:
+          oneOf:
+            - $ref: "#/components/schemas/ProviderSettings"
+            - type: "null"
+
+    # ── Tech Stack ─────────────────────────────
+    TechStack:
+      type: array
+      items:
+        type: string
+      example: ["Java", "Spring Boot", "PostgreSQL", "TypeScript", "React", "Docker"]
+
+    # ── Phase 1: Skeleton ──────────────────────
+    GenerateSkeletonRequest:
+      type: object
+      required: [projectName, techStack, description, providerConfig]
+      properties:
+        projectName:
+          type: string
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+        description:
+          type: string
+        teamSize:
+          type: integer
+          default: 1
+          description: Размер команды — используется для калибровки оценки estimatedHours
+        aiEstimate:
+          type: boolean
+          default: true
+          description: |
+            Если true — ИИ генерирует estimatedHours для каждого узла.
+            Если false — поле опускается (будет заполнено вручную).
+        providerConfig:
+          $ref: "#/components/schemas/ProviderConfig"
+
+    SkeletonNode:
+      type: object
+      required: [tempId, title]
+      properties:
+        tempId:
+          type: string
+          example: "node_1"
+        title:
+          type: string
+        description:
+          type: [string, "null"]
+        category:
+          oneOf:
+            - type: string
+              enum:
+                [
+                  BACKEND,
+                  FRONTEND,
+                  DEVOPS,
+                  TESTING,
+                  DOCUMENTATION,
+                  DESIGN,
+                  OTHER,
+                ]
+            - type: "null"
+        estimatedHours:
+          type: [number, "null"]
+          format: float
+          description: |
+            Оценка трудозатрат в часах от ИИ.
+            Присутствует только если aiEstimate=true в запросе.
+          example: 4.0
+
+    SkeletonEdge:
+      type: object
+      required: [sourceTempId, targetTempId]
+      properties:
+        sourceTempId:
+          type: string
+        targetTempId:
+          type: string
+
+    GenerateSkeletonResponse:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkeletonNode"
+          minItems: 1
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkeletonEdge"
+        totalEstimatedHours:
+          type: [number, "null"]
+          format: float
+          description: Суммарная оценка по всем узлам (если aiEstimate=true)
+        modelUsed:
+          type: string
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+        promptTokens:
+          type: [integer, "null"]
+        completionTokens:
+          type: [integer, "null"]
+        thinkingTokens:
+          type: [integer, "null"]
+          description: Токены на "думание" (Gemini/Anthropic/OpenAI reasoning models)
+
+    # ── Phase 2: Enrichment ────────────────────
+    TaskContext:
+      type: object
+      required: [taskId, taskTitle]
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        taskTitle:
+          type: string
+        taskDescription:
+          type: [string, "null"]
+        category:
+          oneOf:
+            - type: string
+              enum:
+                [
+                  BACKEND,
+                  FRONTEND,
+                  DEVOPS,
+                  TESTING,
+                  DOCUMENTATION,
+                  DESIGN,
+                  OTHER,
+                ]
+            - type: "null"
+        predecessorTitles:
+          type: array
+          description: |
+            Заголовки задач-предшественников (родители в DAG).
+            ИИ использует их чтобы понять, что уже сделано к моменту
+            выполнения этой задачи — влияет на checklist и pitfalls.
+          items:
+            type: string
+          example: ["Инициализация Spring Boot", "Настройка PostgreSQL"]
+        successorTitles:
+          type: array
+          description: |
+            Заголовки задач-потомков (дети в DAG).
+            ИИ понимает, что нужно подготовить для следующих шагов,
+            и не включает в checklist то, что будет сделано позже.
+          items:
+            type: string
+          example: ["Написание JWT-фильтра", "Тесты безопасности"]
+        estimatedHours:
+          type: [number, "null"]
+          format: float
+          description: Текущая оценка часов (контекст для генерации Wiki)
+
+    EnrichTaskRequest:
+      type: object
+      required: [projectName, techStack, task, callbackUrl, providerConfig]
+      description: |
+        Запрос на асинхронное обогащение одной задачи.
+        AI Service немедленно возвращает 202 с jobId, ставит задачу
+        в очередь (Celery) и по завершении POST-ит результат на callbackUrl.
+      properties:
+        projectName:
+          type: string
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+        task:
+          $ref: "#/components/schemas/TaskContext"
+        callbackUrl:
+          type: string
+          format: uri
+          description: |
+            URL Core API для доставки результата по завершении обогащения.
+            Например: https://api.taskgraph.app/api/v1/internal/enrichment-callback
+        generateWikiDraft:
+          type: boolean
+          default: true
+          description: |
+            Если true — ИИ генерирует расширенный Markdown для Wiki-страницы
+            задачи (помимо краткого rawMarkdown для карточки).
+        providerConfig:
+          $ref: "#/components/schemas/ProviderConfig"
+
+    EnrichTaskJobResponse:
+      type: object
+      description: Немедленный ответ при постановке задачи обогащения в очередь.
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: ID задачи в очереди Celery — для трассировки и логов
+        taskId:
+          type: string
+          format: uuid
+          description: ID задачи TaskGraph, которая будет обогащена
+        status:
+          type: string
+          enum: [QUEUED]
+          description: Всегда QUEUED при 202-ответе
+        estimatedSeconds:
+          type: [integer, "null"]
+          description: Примерное время обогащения в секундах (зависит от провайдера)
+          example: 8
+
+    EnrichTaskCallback:
+      type: object
+      description: |
+        Тело POST-запроса от AI Service на callbackUrl Core API
+        по завершении обогащения задачи.
+      required: [jobId, taskId, status]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        taskId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/EnrichTaskResponse"
+            - type: "null"
+          description: Заполнено при status=SUCCESS
+        error:
+          type: [string, "null"]
+          description: Описание ошибки при status=FAILED
+        providerError:
+          type: [string, "null"]
+          description: Оригинальное сообщение от провайдера при status=FAILED
+
+    DocLink:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+
+    EnrichTaskResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        checklist:
+          type: array
+          items:
+            type: string
+        pitfalls:
+          type: array
+          items:
+            type: string
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocLink"
+        rawMarkdown:
+          type: string
+          description: Краткий Markdown для карточки задачи
+        wikiDraft:
+          type: [string, "null"]
+          description: |
+            Расширенный Markdown для Wiki-страницы задачи.
+            Присутствует только если generateWikiDraft=true.
+        modelUsed:
+          type: string
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+
+    # ── Phase 3: Mutation ──────────────────────
+    GraphSnapshot:
+      type: object
+      description: Снимок графа без enrichment-контента
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              title:
+                type: string
+              status:
+                type: string
+                enum: [LOCKED, AVAILABLE, IN_PROGRESS, COMPLETED, SKIPPED]
+              estimatedHours:
+                type: [number, "null"]
+                format: float
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              sourceTaskId:
+                type: string
+                format: uuid
+              targetTaskId:
+                type: string
+                format: uuid
+
+    MutateGraphRequest:
+      type: object
+      required: [currentGraph, prompt, projectName, techStack, providerConfig]
+      properties:
+        currentGraph:
+          $ref: "#/components/schemas/GraphSnapshot"
+        prompt:
+          type: string
+          example: "Хочу добавить Redis для кэширования продуктов"
+        projectName:
+          type: string
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+        aiEstimate:
+          type: boolean
+          default: true
+          description: Генерировать estimatedHours для новых узлов патча
+        providerConfig:
+          $ref: "#/components/schemas/ProviderConfig"
+
+    MutationPatch:
+      type: object
+      description: Минимальный патч — только дельта (новые узлы и рёбра)
+      properties:
+        newNodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkeletonNode"
+        newEdges:
+          type: array
+          items:
+            type: object
+            required: [sourceTempIdOrUuid, targetTempIdOrUuid]
+            properties:
+              sourceTempIdOrUuid:
+                type: string
+              targetTempIdOrUuid:
+                type: string
+        recalculatedTotalHours:
+          type: [number, "null"]
+          format: float
+          description: Пересчитанная суммарная оценка после добавления новых узлов
+        reasoning:
+          type: [string, "null"]
+          description: |
+            Внутреннее объяснение ИИ о выборе структуры патча
+            (почему выбраны именно эти точки подключения к графу).
+            Используется для логирования в ActionLog, не отображается пользователю.
+
+    MutateGraphResponse:
+      type: object
+      properties:
+        patch:
+          $ref: "#/components/schemas/MutationPatch"
+        modelUsed:
+          type: string
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+
+    # ── Smart Recovery ─────────────────────────
+    SmartRecoveryRequest:
+      type: object
+      required:
+        [
+          currentGraph,
+          failedMutation,
+          cycleNodes,
+          projectName,
+          techStack,
+          providerConfig,
+        ]
+      properties:
+        currentGraph:
+          $ref: "#/components/schemas/GraphSnapshot"
+        failedMutation:
+          $ref: "#/components/schemas/MutationPatch"
+          description: Патч, который создал цикл
+        cycleNodes:
+          type: array
+          description: UUID узлов, образующих цикл
+          items:
+            type: string
+            format: uuid
+        projectName:
+          type: string
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+        aiEstimate:
+          type: boolean
+          default: true
+        providerConfig:
+          $ref: "#/components/schemas/ProviderConfig"
+
+    SmartRecoveryResponse:
+      type: object
+      description: |
+        Исправленный патч без циклических зависимостей.
+        Core API проводит повторную DFS-валидацию перед применением.
+      properties:
+        fixedPatch:
+          $ref: "#/components/schemas/MutationPatch"
+        recoveryNote:
+          type: string
+          description: Объяснение для пользователя
+          example: "План скорректирован ИИ для избежания циклов"
+        modelUsed:
+          type: string
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+
+    # ── Diagrams ───────────────────────────────
+    DiagramNode:
+      type: object
+      description: Узел графа с полным обогащённым контентом для генерации диаграмм
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: [string, "null"]
+        category:
+          type: [string, "null"]
+          enum:
+            [
+              BACKEND,
+              FRONTEND,
+              DEVOPS,
+              TESTING,
+              DOCUMENTATION,
+              DESIGN,
+              OTHER,
+              null,
+            ]
+        status:
+          type: string
+          enum: [LOCKED, AVAILABLE, IN_PROGRESS, COMPLETED, SKIPPED]
+        layer:
+          type: integer
+          description: Слой топологической сортировки
+        checklist:
+          type: array
+          description: Чек-лист из enrichment (для Class-диаграммы — методы/операции)
+          items:
+            type: string
+        links:
+          type: array
+          description: Ссылки на внешние зависимости (библиотеки, сервисы) — важны для C4
+          items:
+            type: object
+            properties:
+              title:
+                type: string
+              url:
+                type: string
+                format: uri
+
+    DiagramEdge:
+      type: object
+      properties:
+        sourceTaskId:
+          type: string
+          format: uuid
+        targetTaskId:
+          type: string
+          format: uuid
+
+    DiagramRequest:
+      type: object
+      required: [nodes, edges, projectName, techStack, providerConfig]
+      description: |
+        Полный граф с обогащённым контентом задач.
+        Чем больше данных enrichment передано — тем точнее диаграммы:
+        - C4: использует techStack, links из задач (внешние зависимости), category
+        - Sequence: использует layer (порядок слоёв), title, status
+        - Class: использует checklist (методы/операции), category, title
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiagramNode"
+          description: Узлы с enrichment-данными (можно передавать частично обогащённый граф)
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiagramEdge"
+        projectName:
+          type: string
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+        providerConfig:
+          $ref: "#/components/schemas/ProviderConfig"
+        requestedDiagrams:
+          type: array
+          items:
+            type: string
+            enum: [c4, sequence, class]
+          default: [c4, sequence, class]
+
+    DiagramResponse:
+      type: object
+      properties:
+        c4Code:
+          type: [string, "null"]
+        sequenceCode:
+          type: [string, "null"]
+        classCode:
+          type: [string, "null"]
+        modelUsed:
+          type: string
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+
+    # ── Wiki Generation ────────────────────────
+    WikiTaskContext:
+      type: object
+      required: [taskId, taskTitle]
+      description: |
+        Контекст задачи специально для генерации Wiki-страницы.
+        Отделён от TaskContext (используемого при enrichment), так как
+        Wiki требует более полных данных: уже готовый enrichment,
+        позиция задачи в графе и связанные задачи.
+      properties:
+        taskId:
+          type: string
+          format: uuid
+        taskTitle:
+          type: string
+        taskDescription:
+          type: [string, "null"]
+        category:
+          oneOf:
+            - type: string
+              enum:
+                [
+                  BACKEND,
+                  FRONTEND,
+                  DEVOPS,
+                  TESTING,
+                  DOCUMENTATION,
+                  DESIGN,
+                  OTHER,
+                ]
+            - type: "null"
+        estimatedHours:
+          type: [number, "null"]
+          format: float
+        predecessorTitles:
+          type: array
+          description: |
+            Заголовки задач-предшественников. ИИ упоминает их в секции
+            "Предварительные условия" Wiki-страницы.
+          items:
+            type: string
+        successorTitles:
+          type: array
+          description: |
+            Заголовки задач-потомков. ИИ добавляет раздел
+            "Что настраивается следующим шагом".
+          items:
+            type: string
+        checklist:
+          type: array
+          description: Чек-лист из enrichment — ИИ разворачивает каждый пункт в подробное описание
+          items:
+            type: string
+        pitfalls:
+          type: array
+          description: Подводные камни из enrichment — ИИ объясняет каждый подробнее
+          items:
+            type: string
+        links:
+          type: array
+          description: Ссылки из enrichment — ИИ дополняет и структурирует
+          items:
+            type: object
+            properties:
+              title:
+                type: string
+              url:
+                type: string
+                format: uri
+
+    GenerateWikiRequest:
+      type: object
+      required: [projectName, techStack, task, providerConfig]
+      properties:
+        projectName:
+          type: string
+          description: Название проекта — контекст верхнего уровня
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+          description: Технологический стек — ИИ подбирает релевантные ссылки и примеры
+        task:
+          $ref: "#/components/schemas/WikiTaskContext"
+        existingContent:
+          type: [string, "null"]
+          description: |
+            Текущий контент страницы при регенерации.
+            ИИ использует его как черновик для улучшения, а не генерирует с нуля.
+            null = генерация с нуля.
+        providerConfig:
+          $ref: "#/components/schemas/ProviderConfig"
+
+    GenerateWikiResponse:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Предложенный заголовок страницы
+        content:
+          type: string
+          description: Полный Markdown-контент Wiki-страницы
+        modelUsed:
+          type: string
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+
+    # ── Health ─────────────────────────────────
+    ProviderCheckResponse:
+      type: object
+      properties:
+        provider:
+          $ref: "#/components/schemas/AiProviderType"
+        available:
+          type: boolean
+        latencyMs:
+          type: [integer, "null"]
+        error:
+          type: [string, "null"]
+        ollamaModels:
+          type: [array, "null"]
+          items:
+            type: string
+
+    # ── Errors ─────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        detail:
+          type: [string, "null"]
+        provider:
+          oneOf:
+            - $ref: "#/components/schemas/AiProviderType"
+            - type: "null"
+        providerHttpStatus:
+          type: [integer, "null"]
+        timestamp:
+          type: string
+          format: date-time
+
+# ══════════════════════════════════════════════
+security:
+  - InternalSecret: []
+
+paths:
+  # ── Health ─────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: healthCheck
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                  version:
+                    type: string
+
+  /health/providers:
+    post:
+      tags: [Health]
+      summary: Проверить провайдера (ключ + latency + Ollama-модели)
+      operationId: checkProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [providerConfig]
+              properties:
+                providerConfig:
+                  $ref: "#/components/schemas/ProviderConfig"
+      responses:
+        "200":
+          description: Статус провайдера
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCheckResponse"
+
+  # ── Phase 1 ────────────────────────────────
+  /api/v1/ai/skeleton:
+    post:
+      tags: [Graph Generation]
+      summary: Генерация скелета графа (Фаза 1)
+      description: |
+        Генерирует структуру (nodes + edges). При `aiEstimate=true` добавляет
+        `estimatedHours` к каждому узлу.
+
+        **Поведение по провайдерам:**
+        - **gemini**: если `settings.enableWebSearch=true` — включает Google Search Grounding
+        - **gemini 2.5+**: если `settings.thinkingBudget` задан — включает extended thinking
+        - **anthropic claude-3-7+**: если `settings.extendedThinking=true` — включает thinking
+        - **openai o1/o3/o4**: `settings.reasoningEffort` управляет глубиной reasoning
+        - **ollama**: использует format=json + retry при невалидном ответе
+      operationId: generateSkeleton
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateSkeletonRequest"
+            examples:
+              openai_reasoning:
+                summary: OpenAI o4-mini с high reasoning
+                value:
+                  projectName: "E-Commerce Store"
+                  techStack: ["Java", "Spring Boot", "TypeScript", "React"]
+                  description: "MVP магазина"
+                  teamSize: 3
+                  aiEstimate: true
+                  providerConfig:
+                    provider: openai
+                    apiKey: "sk-proj-..."
+                    model: o4-mini
+                    settings:
+                      reasoningEffort: high
+                      maxTokens: 8192
+              anthropic_thinking:
+                summary: Claude с extended thinking
+                value:
+                  projectName: "E-Commerce Store"
+                  techStack: ["Java", "Spring Boot", "TypeScript", "React"]
+                  description: "MVP магазина"
+                  teamSize: 2
+                  aiEstimate: true
+                  providerConfig:
+                    provider: anthropic
+                    apiKey: "sk-ant-..."
+                    model: claude-sonnet-4-6
+                    settings:
+                      extendedThinking: true
+                      thinkingTokenBudget: 10000
+                      temperature: 1
+              gemini_thinking:
+                summary: Gemini 2.5 Pro с thinking + web search
+                value:
+                  projectName: "Pet Project"
+                  techStack: ["Python", "FastAPI", "Next.js"]
+                  description: "Блог"
+                  aiEstimate: true
+                  providerConfig:
+                    provider: gemini
+                    apiKey: "AIza..."
+                    model: gemini-2.5-pro
+                    settings:
+                      thinkingBudget: 8192
+                      enableWebSearch: true
+              groq_fast:
+                summary: Groq Llama (быстро)
+                value:
+                  projectName: "Pet Project"
+                  techStack: ["Go", "Vue.js"]
+                  description: "API сервис"
+                  aiEstimate: false
+                  providerConfig:
+                    provider: groq
+                    apiKey: "gsk_..."
+                    model: llama-3.3-70b-versatile
+                    settings:
+                      temperature: 0.6
+      responses:
+        "200":
+          description: Скелет сгенерирован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateSkeletonResponse"
+        "400":
+          description: Ошибка валидации или отсутствует apiKey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: ИИ вернул невалидный JSON после нескольких попыток
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Провайдер недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: Таймаут
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Phase 2 ────────────────────────────────
+  /api/v1/ai/enrich-task:
+    post:
+      tags: [Task Enrichment]
+      summary: Поставить задачу обогащения в очередь (Фаза 2, async)
+      description: |
+        Принимает задачу, немедленно ставит её в очередь Celery и возвращает
+        202 с jobId. Обогащение происходит в фоне.
+
+        По завершении AI Service делает POST на `callbackUrl` с телом
+        `EnrichTaskCallback`. Core API принимает результат, сохраняет
+        enrichment и пушит обновление фронту через WebSocket.
+
+        **Флоу Фазы 2:**
+        1. Core API вызывает этот эндпоинт для каждой задачи сразу после
+           создания скелета (все вызовы параллельно, не ждут друг друга)
+        2. AI Service обрабатывает задачи независимо по мере освобождения воркеров
+        3. Каждый результат прилетает на callbackUrl индивидуально
+        4. Core API обновляет enrichmentStatus узла и пушит WebSocket-событие
+        5. Когда все задачи обогащены — enrichmentStatus проекта → COMPLETED
+      operationId: enrichTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrichTaskRequest"
+      responses:
+        "202":
+          description: Задача принята в очередь
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrichTaskJobResponse"
+        "400":
+          description: Ошибка валидации или отсутствует apiKey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный X-Internal-Secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Очередь Celery недоступна
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Phase 3 ────────────────────────────────
+  /api/v1/ai/mutate:
+    post:
+      tags: [Graph Mutation]
+      summary: Генерация патча мутации (Фаза 3)
+      description: |
+        Возвращает минимальный JSON-патч. Core API применяет его после DFS-валидации.
+        При `aiEstimate=true` — новые узлы включают estimatedHours.
+      operationId: mutateGraph
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MutateGraphRequest"
+      responses:
+        "200":
+          description: Патч сгенерирован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MutateGraphResponse"
+        "401":
+          description: Невалидный API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Невалидный ответ ИИ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Провайдер недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Smart Recovery ─────────────────────────
+  /api/v1/ai/smart-recovery:
+    post:
+      tags: [Smart Recovery]
+      summary: Исправить циклический патч (Smart Recovery)
+      description: |
+        Вызывается Core API когда DFS-валидация обнаружила цикл в патче.
+        ИИ получает: текущий граф + failed patch + список узлов цикла.
+        Возвращает исправленный патч без цикла.
+        Core API обязан повторно провести DFS-валидацию перед применением.
+      operationId: smartRecovery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmartRecoveryRequest"
+            example:
+              currentGraph:
+                nodes:
+                  - id: "550e8400-e29b-41d4-a716-446655440001"
+                    title: "Настройка PostgreSQL"
+                    status: COMPLETED
+                  - id: "550e8400-e29b-41d4-a716-446655440002"
+                    title: "Spring Data JPA"
+                    status: AVAILABLE
+                edges:
+                  - sourceTaskId: "550e8400-e29b-41d4-a716-446655440001"
+                    targetTaskId: "550e8400-e29b-41d4-a716-446655440002"
+              failedMutation:
+                newNodes:
+                  - tempId: "node_redis"
+                    title: "Настройка Redis"
+                    estimatedHours: 3
+                newEdges:
+                  - sourceTempIdOrUuid: "550e8400-e29b-41d4-a716-446655440002"
+                    targetTempIdOrUuid: "node_redis"
+                  - sourceTempIdOrUuid: "node_redis"
+                    targetTempIdOrUuid: "550e8400-e29b-41d4-a716-446655440001"
+              cycleNodes:
+                - "550e8400-e29b-41d4-a716-446655440001"
+                - "550e8400-e29b-41d4-a716-446655440002"
+              projectName: "E-Commerce Store"
+              techStack: ["Java", "Spring Boot", "PostgreSQL", "TypeScript", "React"]
+              providerConfig:
+                provider: openai
+                apiKey: "sk-proj-..."
+                model: gpt-4o
+      responses:
+        "200":
+          description: Исправленный патч
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmartRecoveryResponse"
+        "422":
+          description: |
+            ИИ не смог разрешить конфликт (очень сложная структура цикла).
+            Core API должен вернуть пользователю CycleErrorResponse.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Провайдер недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Diagrams ───────────────────────────────
+  /api/v1/ai/diagrams:
+    post:
+      tags: [Diagrams]
+      summary: Генерация Mermaid-диаграмм (C4, Sequence, Class)
+      operationId: generateDiagrams
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiagramRequest"
+      responses:
+        "200":
+          description: Диаграммы сгенерированы
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagramResponse"
+        "401":
+          description: Невалидный API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Невалидная Mermaid-разметка в ответе ИИ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Провайдер недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Wiki ───────────────────────────────────
+  /api/v1/ai/wiki:
+    post:
+      tags: [Wiki]
+      summary: Генерировать / регенерировать Wiki-страницу задачи
+      description: |
+        Если передан `existingContent` — регенерирует на основе текущего контента.
+        Если нет — создаёт с нуля на основе контекста задачи.
+        Используется при:
+        - `POST /wiki/{pageId}/ai-regenerate` в Core API
+        - Фазе 2, если нужна отдельная Wiki-страница отдельным вызовом
+      operationId: generateWikiPage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateWikiRequest"
+      responses:
+        "200":
+          description: Wiki-контент сгенерирован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateWikiResponse"
+        "401":
+          description: Невалидный API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Провайдер недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

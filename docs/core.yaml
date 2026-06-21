@@ -1,0 +1,2529 @@
+openapi: 3.1.0
+info:
+  title: TaskGraph — Core API
+  description: |
+    Основной бэкенд TaskGraph на Spring Boot.
+
+    ## Провайдеры ИИ
+    Поддерживаются: **gemini**, **openai**, **anthropic**, **groq**, **mistral**, **ollama**.
+
+    Настройки провайдера — два способа (работают вместе):
+
+    **Способ 1 — X-заголовки (per-request, приоритет выше)**
+    ```
+    X-AI-Provider: openai
+    X-AI-API-Key: sk-...
+    X-AI-Model: gpt-4o
+    ```
+    `X-AI-API-Key` никогда не сохраняется бэкендом.
+
+    **Способ 2 — Сохранённый профиль** (`PUT /users/me/ai-settings`)
+
+    **Приоритет:** `X-заголовки → сохранённый профиль → ошибка 400`
+
+    ## Роли в проекте
+    - `OWNER` — создатель, полный доступ, управление участниками
+    - `ADMIN` — управление задачами и графом, приглашения
+    - `MEMBER` — работа с задачами, логирование времени, редактирование Wiki
+    - `VIEWER` — только чтение
+
+    ## Учёт трудозатрат
+    Оценка (`estimatedHours`) — либо от ИИ при генерации (флаг `aiEstimate=true`),
+    либо вручную. Фактические трудозатраты (`loggedHours`) накапливаются
+    через `POST /tasks/{id}/time-logs`.
+
+  version: 1.2.0
+  contact:
+    name: TaskGraph Team
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://api.taskgraph.app
+    description: Production
+
+tags:
+  - name: Auth
+    description: Регистрация, вход, выход, токены
+  - name: Users
+    description: Профиль и AI-настройки текущего пользователя
+  - name: Projects
+    description: CRUD проектов, участники, граф
+  - name: Tasks
+    description: CRUD задач, статусы, трудозатраты
+  - name: Edges
+    description: Рёбра (зависимости) DAG
+  - name: AI
+    description: Эндпоинты, вызывающие AI Service Bridge
+  - name: Blueprints
+    description: Архитектурные диаграммы Mermaid
+  - name: Wiki
+    description: Wiki-страницы проекта
+  - name: ActionLog
+    description: Лог действий пользователей и ИИ
+  - name: GitHub
+    description: Вебхуки GitHub
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    XAiProvider:
+      name: X-AI-Provider
+      in: header
+      required: false
+      schema:
+        type: string
+        enum: [gemini, openai, anthropic, groq, mistral, ollama]
+    XAiApiKey:
+      name: X-AI-API-Key
+      in: header
+      required: false
+      description: Личный API-ключ (BYOK). Не сохраняется.
+      schema:
+        type: string
+    XAiModel:
+      name: X-AI-Model
+      in: header
+      required: false
+      schema:
+        type: string
+    XOllamaBaseUrl:
+      name: X-Ollama-Base-URL
+      in: header
+      required: false
+      schema:
+        type: string
+
+  schemas:
+    # ══ Auth ══════════════════════════════════
+    RegisterRequest:
+      type: object
+      required: [email, password, displayName]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        displayName:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    AuthResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: JWT access token (TTL 15 min)
+        refreshToken:
+          type: string
+          description: Refresh token (TTL 7 days)
+        tokenType:
+          type: string
+          default: Bearer
+        user:
+          $ref: "#/components/schemas/UserProfile"
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+
+    # ══ Users & AI Settings ════════════════════
+    AiProvider:
+      type: string
+      enum: [gemini, openai, anthropic, groq, mistral, ollama]
+
+    AiProviderSettings:
+      type: object
+      description: |
+        Тонкие настройки конкретного провайдера (уровень "думания",
+        температура и т.д.). Ненужные поля для данного провайдера игнорируются.
+      properties:
+        # Общие для всех облачных
+        temperature:
+          type: [number, "null"]
+          format: float
+          minimum: 0
+          maximum: 2
+          description: |
+            Температура генерации (0 = детерминированный, 1 = креативный).
+            Поддерживается всеми провайдерами.
+          example: 0.7
+        maxTokens:
+          type: [integer, "null"]
+          description: Максимальное число токенов в ответе.
+          example: 4096
+        # Gemini
+        thinkingBudget:
+          type: [integer, "null"]
+          description: |
+            Бюджет токенов на "думание" для моделей Gemini с поддержкой
+            extended thinking (например, gemini-2.5-pro). null = авто.
+          example: 8192
+        enableWebSearch:
+          type: [boolean, "null"]
+          description: Google Search Grounding (только Gemini).
+        # Anthropic
+        extendedThinking:
+          type: [boolean, "null"]
+          description: |
+            Включить extended thinking для Claude (claude-3-7-sonnet и новее).
+            Увеличивает качество рассуждений, но повышает latency и стоимость.
+        thinkingTokenBudget:
+          type: [integer, "null"]
+          description: Бюджет токенов для extended thinking Anthropic.
+          example: 10000
+        # OpenAI
+        reasoningEffort:
+          oneOf:
+            - type: string
+              enum: [low, medium, high]
+            - type: "null"
+          description: |
+            Уровень "думания" для моделей серии o1/o3/o4
+            (reasoning models). Игнорируется для gpt-4o и т.п.
+        # Groq
+        groqReasoningFormat:
+          oneOf:
+            - type: string
+              enum: [parsed, raw, hidden]
+            - type: "null"
+          description: Формат reasoning-токенов в ответе Groq.
+        # Ollama
+        ollamaNumCtx:
+          type: [integer, "null"]
+          description: Размер контекстного окна Ollama (num_ctx).
+          example: 8192
+        ollamaNumGpu:
+          type: [integer, "null"]
+          description: Количество GPU-слоёв для Ollama (num_gpu).
+
+    SavedAiSettings:
+      type: object
+      description: |
+        Сохранённые AI-настройки пользователя. API-ключ возвращается
+        замаскированным (последние 4 символа).
+      properties:
+        provider:
+          oneOf:
+            - $ref: "#/components/schemas/AiProvider"
+            - type: "null"
+        model:
+          type: [string, "null"]
+          example: "gpt-4o"
+        apiKeyMasked:
+          type: [string, "null"]
+          example: "sk-...3fKz"
+        hasApiKey:
+          type: boolean
+        ollamaBaseUrl:
+          type: [string, "null"]
+        providerSettings:
+          oneOf:
+            - $ref: "#/components/schemas/AiProviderSettings"
+            - type: "null"
+
+    UpdateAiSettingsRequest:
+      type: object
+      properties:
+        provider:
+          $ref: "#/components/schemas/AiProvider"
+        model:
+          type: [string, "null"]
+        apiKey:
+          type: [string, "null"]
+          description: Открытый ключ — будет зашифрован AES-256. null = удалить.
+        ollamaBaseUrl:
+          type: [string, "null"]
+        providerSettings:
+          oneOf:
+            - $ref: "#/components/schemas/AiProviderSettings"
+            - type: "null"
+      examples:
+        - provider: openai
+          model: o4-mini
+          apiKey: "sk-proj-..."
+          providerSettings:
+            reasoningEffort: high
+            maxTokens: 8192
+        - provider: anthropic
+          model: claude-sonnet-4-6
+          apiKey: "sk-ant-..."
+          providerSettings:
+            extendedThinking: true
+            thinkingTokenBudget: 10000
+            temperature: 1
+        - provider: gemini
+          model: gemini-2.5-pro
+          apiKey: "AIza..."
+          providerSettings:
+            thinkingBudget: 8192
+            enableWebSearch: true
+        - provider: groq
+          model: llama-3.3-70b-versatile
+          apiKey: "gsk_..."
+          providerSettings:
+            temperature: 0.6
+        - provider: mistral
+          model: mistral-large-latest
+          apiKey: "..."
+          providerSettings:
+            temperature: 0.7
+            maxTokens: 4096
+        - provider: ollama
+          model: llama3
+          ollamaBaseUrl: "http://localhost:11434"
+          providerSettings:
+            ollamaNumCtx: 8192
+            temperature: 0.7
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        displayName:
+          type: string
+        avatarUrl:
+          type: [string, "null"]
+          description: |
+            Публичный URL аватара. Обновляется через
+            POST /api/v1/users/me/avatar (multipart/form-data).
+        aiSettings:
+          oneOf:
+            - $ref: "#/components/schemas/SavedAiSettings"
+            - type: "null"
+        createdAt:
+          type: string
+          format: date-time
+
+    # ══ Projects & Members ════════════════════
+    ProjectRole:
+      type: string
+      enum: [OWNER, ADMIN, MEMBER, VIEWER]
+      description: |
+        Роль участника в проекте:
+        - OWNER — создатель, полный доступ
+        - ADMIN — управление задачами, приглашения
+        - MEMBER — работа с задачами, Wiki, time-log
+        - VIEWER — только чтение
+
+    ProjectMember:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        email:
+          type: string
+        avatarUrl:
+          type: [string, "null"]
+        role:
+          $ref: "#/components/schemas/ProjectRole"
+        joinedAt:
+          type: string
+          format: date-time
+
+    TechStack:
+      type: array
+      items:
+        type: string
+      example: ["Java", "Spring Boot", "PostgreSQL", "TypeScript", "React", "Redux Toolkit", "Docker", "Redis"]
+
+    CreateProjectRequest:
+      type: object
+      required: [name, techStack, description]
+      properties:
+        name:
+          type: string
+          example: "E-Commerce Store"
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+        description:
+          type: string
+        teamSize:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Размер команды — передаётся ИИ для оценки трудозатрат
+        aiEstimate:
+          type: boolean
+          default: true
+          description: |
+            Если true — ИИ автоматически генерирует estimatedHours для каждой задачи.
+            Если false — поле остаётся пустым для ручного заполнения.
+
+    ProjectResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        techStack:
+          $ref: "#/components/schemas/TechStack"
+        status:
+          type: string
+          enum: [PENDING_AI, ACTIVE, COMPLETED, ARCHIVED]
+        ownerId:
+          type: string
+          format: uuid
+        teamSize:
+          type: integer
+        aiEstimate:
+          type: boolean
+        totalEstimatedHours:
+          type: [number, "null"]
+          format: float
+          description: Суммарная оценка по всем задачам
+        totalLoggedHours:
+          type: [number, "null"]
+          format: float
+          description: Суммарно залогированных часов
+        completionPercent:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          description: Процент завершённости (COMPLETED / total tasks * 100)
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectMember"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProjectGraphResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/EdgeResponse"
+        enrichmentStatus:
+          type: string
+          enum: [PENDING, IN_PROGRESS, COMPLETED]
+          description: |
+            Состояние фонового обогащения задач (Фаза 2):
+            - `PENDING` — скелет создан, очередь обогащения ещё не стартовала
+            - `IN_PROGRESS` — запросы к ИИ идут, часть задач уже обогащена
+            - `COMPLETED` — все задачи получили checklist / pitfalls / wiki-драфт
+
+    InviteMemberRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          $ref: "#/components/schemas/ProjectRole"
+
+    UpdateMemberRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/ProjectRole"
+
+    # ══ Tasks ═════════════════════════════════
+    TaskCategory:
+      type: string
+      enum: [BACKEND, FRONTEND, DEVOPS, TESTING, DOCUMENTATION, DESIGN, OTHER]
+      description: Тип задачи — используется для автоматического предложения исполнителей
+
+    TimeLog:
+      type: object
+      description: Запись о затраченном времени
+      properties:
+        id:
+          type: string
+          format: uuid
+        taskId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        userDisplayName:
+          type: string
+        hours:
+          type: number
+          format: float
+          minimum: 0.25
+          example: 2.5
+        comment:
+          type: [string, "null"]
+          example: "Настроил SecurityConfig, написал тесты"
+        loggedAt:
+          type: string
+          format: date-time
+
+    TaskNode:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [LOCKED, AVAILABLE, IN_PROGRESS, COMPLETED, SKIPPED]
+        category:
+          oneOf:
+            - $ref: "#/components/schemas/TaskCategory"
+            - type: "null"
+        layer:
+          type: integer
+          description: Слой топологической сортировки
+        positionX:
+          type: number
+          format: float
+        positionY:
+          type: number
+          format: float
+        # ── Назначение ───────────────────────
+        assignees:
+          type: array
+          description: Исполнители задачи (аватары отображаются на узле в ReactFlow)
+          items:
+            type: object
+            properties:
+              userId:
+                type: string
+                format: uuid
+              displayName:
+                type: string
+              avatarUrl:
+                type: [string, "null"]
+        # ── Прогресс ─────────────────────────
+        completionPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 0
+          description: Ручной процент готовности (0-100)
+        # ── Трудозатраты ─────────────────────
+        estimatedHours:
+          type: [number, "null"]
+          format: float
+          description: Оценка трудозатрат (от ИИ или вручную)
+          example: 4.0
+        loggedHours:
+          type: number
+          format: float
+          default: 0
+          description: Суммарно залогировано часов по задаче
+        # ── Даты ─────────────────────────────
+        startDate:
+          type: [string, "null"]
+          format: date
+          description: Планируемая дата начала
+        dueDate:
+          type: [string, "null"]
+          format: date
+          description: Срок завершения
+        # ── Wiki ─────────────────────────────
+        wikiPageId:
+          type: [string, "null"]
+          format: uuid
+          description: ID связанной Wiki-страницы (создаётся автоматически в Фазе 2)
+        # ── Обогащение ───────────────────────
+        enrichment:
+          oneOf:
+            - $ref: "#/components/schemas/TaskEnrichment"
+            - type: "null"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TaskEnrichment:
+      type: object
+      properties:
+        checklist:
+          type: array
+          items:
+            type: string
+        pitfalls:
+          type: array
+          items:
+            type: string
+        links:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocLink"
+        rawMarkdown:
+          type: string
+
+    EnrichTaskCallback:
+      type: object
+      description: |
+        Тело POST-запроса от AI Service на /api/v1/internal/enrichment-callback
+        по завершении обогащения задачи.
+      required: [jobId, taskId, status]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        taskId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        checklist:
+          type: [array, "null"]
+          items:
+            type: string
+        pitfalls:
+          type: [array, "null"]
+          items:
+            type: string
+        links:
+          type: [array, "null"]
+          items:
+            $ref: "#/components/schemas/DocLink"
+        rawMarkdown:
+          type: [string, "null"]
+        wikiDraft:
+          type: [string, "null"]
+        error:
+          type: [string, "null"]
+          description: Описание ошибки при status=FAILED
+
+    DocLink:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+
+    CreateTaskRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        description:
+          type: [string, "null"]
+        category:
+          oneOf:
+            - $ref: "#/components/schemas/TaskCategory"
+            - type: "null"
+        estimatedHours:
+          type: [number, "null"]
+          format: float
+        startDate:
+          type: [string, "null"]
+          format: date
+        dueDate:
+          type: [string, "null"]
+          format: date
+        positionX:
+          type: number
+          format: float
+          default: 0
+        positionY:
+          type: number
+          format: float
+          default: 0
+
+    UpdateTaskRequest:
+      type: object
+      description: |
+        Используется для обновления данных задачи, включая позицию на холсте
+        (positionX / positionY при drag & drop в ReactFlow).
+      properties:
+        title:
+          type: string
+        description:
+          type: [string, "null"]
+        category:
+          oneOf:
+            - $ref: "#/components/schemas/TaskCategory"
+            - type: "null"
+        estimatedHours:
+          type: [number, "null"]
+          format: float
+        completionPercent:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+        startDate:
+          type: [string, "null"]
+          format: date
+        dueDate:
+          type: [string, "null"]
+          format: date
+        positionX:
+          type: number
+          format: float
+        positionY:
+          type: number
+          format: float
+
+    UpdateTaskStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [IN_PROGRESS, COMPLETED, SKIPPED]
+        loggedHours:
+          type: [number, "null"]
+          format: float
+          description: |
+            Часы, потраченные на выполнение. Если указаны — автоматически
+            создаётся TimeLog запись. Удобный shortcut при закрытии задачи.
+        comment:
+          type: [string, "null"]
+          description: Комментарий к смене статуса (попадёт в ActionLog)
+
+    TaskStatusUpdateResponse:
+      type: object
+      properties:
+        updatedTask:
+          $ref: "#/components/schemas/TaskNode"
+        unlockedTasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskNode"
+        graph:
+          $ref: "#/components/schemas/ProjectGraphResponse"
+
+    CreateTimeLogRequest:
+      type: object
+      required: [hours]
+      properties:
+        hours:
+          type: number
+          format: float
+          minimum: 0.25
+          example: 2.5
+        comment:
+          type: [string, "null"]
+
+    AssignTaskRequest:
+      type: object
+      required: [userIds]
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Список userId исполнителей. Передать пустой массив = снять всех.
+
+    # ══ Edges ═════════════════════════════════
+    CreateEdgeRequest:
+      type: object
+      required: [sourceTaskId, targetTaskId]
+      properties:
+        sourceTaskId:
+          type: string
+          format: uuid
+        targetTaskId:
+          type: string
+          format: uuid
+
+    EdgeResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sourceTaskId:
+          type: string
+          format: uuid
+        targetTaskId:
+          type: string
+          format: uuid
+
+    # ══ AI / Mutate ════════════════════════════
+    MutateGraphRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          type: string
+          example: "Хочу добавить Redis для кэширования продуктов"
+
+    # ══ Smart Recovery ═════════════════════════
+    SmartRecoveryResult:
+      type: object
+      description: |
+        Результат Smart Recovery — автоматического разрешения конфликта цикла.
+        Возвращается вместо CycleErrorResponse, если ИИ смог исправить патч.
+      properties:
+        recovered:
+          type: boolean
+          description: true — ИИ нашёл альтернативный вариант без цикла
+        graph:
+          $ref: "#/components/schemas/ProjectGraphResponse"
+        recoveryNote:
+          type: string
+          description: Подсказка пользователю о том, что именно было исправлено
+          example: "План скорректирован ИИ для избежания циклов"
+        actionLogEntry:
+          $ref: "#/components/schemas/ActionLogEntry"
+
+    # ══ Blueprints ════════════════════════════
+    BlueprintResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        c4Code:
+          type: [string, "null"]
+        sequenceCode:
+          type: [string, "null"]
+        classCode:
+          type: [string, "null"]
+        generatedAt:
+          type: string
+          format: date-time
+
+    # ══ Wiki ══════════════════════════════════
+    WikiMedia:
+      type: object
+      description: Загруженный медиафайл, прикреплённый к Wiki проекта
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        filename:
+          type: string
+          example: "architecture-diagram.png"
+        originalFilename:
+          type: string
+          example: "my diagram.png"
+        mimeType:
+          type: string
+          example: "image/png"
+        sizeBytes:
+          type: integer
+          example: 204800
+        url:
+          type: string
+          format: uri
+          description: |
+            Публичный URL для вставки в Markdown:
+            - Изображение: `![описание](url)`
+            - Файл: `[название](url)`
+        uploadedBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    WikiPage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        taskId:
+          type: [string, "null"]
+          format: uuid
+          description: Привязанная задача (если страница создана для задачи)
+        title:
+          type: string
+          example: "Настройка Spring Security и JWT"
+        content:
+          type: string
+          description: Markdown-контент страницы
+        authorId:
+          type: string
+          format: uuid
+          description: Автор последней правки (userId или системный ID ИИ-агента)
+        authorType:
+          type: string
+          enum: [USER, AI]
+          description: Кто написал последнюю версию
+        version:
+          type: integer
+          description: Номер версии (инкрементируется при каждом сохранении)
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WikiPageSummary:
+      type: object
+      description: Краткая версия для списков
+      properties:
+        id:
+          type: string
+          format: uuid
+        taskId:
+          type: [string, "null"]
+          format: uuid
+        title:
+          type: string
+        authorType:
+          type: string
+          enum: [USER, AI]
+        version:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateWikiPageRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+          description: Markdown-контент
+        taskId:
+          type: [string, "null"]
+          format: uuid
+          description: Привязать к задаче (опционально)
+
+    UpdateWikiPageRequest:
+      type: object
+      required: [content]
+      properties:
+        title:
+          type: [string, "null"]
+        content:
+          type: string
+          description: Markdown-контент новой версии
+
+    # ══ Action Log ════════════════════════════
+    ActionLogEntry:
+      type: object
+      description: Запись в логе действий
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        actorId:
+          type: [string, "null"]
+          format: uuid
+          description: userId или null для AI-агента
+        actorType:
+          type: string
+          enum: [USER, AI, SYSTEM]
+        actorDisplayName:
+          type: string
+          example: "Ivan Petrov"
+        eventType:
+          type: string
+          enum:
+            - PROJECT_CREATED
+            - PROJECT_UPDATED
+            - MEMBER_INVITED
+            - MEMBER_ROLE_CHANGED
+            - MEMBER_REMOVED
+            - TASK_CREATED
+            - TASK_UPDATED
+            - TASK_STATUS_CHANGED
+            - TASK_ASSIGNED
+            - TASK_UNASSIGNED
+            - TASK_DELETED
+            - TIME_LOGGED
+            - EDGE_CREATED
+            - EDGE_DELETED
+            - GRAPH_MUTATED
+            - SMART_RECOVERY_APPLIED
+            - AI_SKELETON_GENERATED
+            - AI_ENRICHMENT_COMPLETED
+            - WIKI_PAGE_CREATED
+            - WIKI_PAGE_UPDATED
+            - BLUEPRINT_GENERATED
+            - GITHUB_TASK_CLOSED
+        description:
+          type: string
+          example: "User X завершил задачу «Настройка Spring Security»"
+        metadata:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Дополнительные данные события (diff, taskId, oldStatus и т.д.)
+        createdAt:
+          type: string
+          format: date-time
+
+    # ══ GitHub Webhook ════════════════════════
+    GitHubWebhookPayload:
+      type: object
+      properties:
+        ref:
+          type: string
+        commits:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              message:
+                type: string
+              author:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  email:
+                    type: string
+
+    # ══ Errors ════════════════════════════════
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+        error:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        path:
+          type: string
+
+    AiProviderErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          properties:
+            providerError:
+              type: object
+              properties:
+                provider:
+                  $ref: "#/components/schemas/AiProvider"
+                providerHttpStatus:
+                  type: [integer, "null"]
+                providerMessage:
+                  type: [string, "null"]
+
+    CycleErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          properties:
+            cycle:
+              type: array
+              items:
+                type: string
+                format: uuid
+            smartRecoveryAvailable:
+              type: boolean
+              description: |
+                Если true — клиент может повторить запрос с заголовком
+                X-Enable-Smart-Recovery: true для автоматического исправления.
+
+# ══════════════════════════════════════════════
+# PATHS
+# ══════════════════════════════════════════════
+paths:
+  # ── Auth ──────────────────────────────────
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "409":
+          description: Email уже занят
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Неверные credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Обновить токены
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Новая пара токенов
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Невалидный refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Выход
+      operationId: logoutUser
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "204":
+          description: Токен инвалидирован
+
+  # ── Users ─────────────────────────────────
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      summary: Профиль текущего пользователя
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+    patch:
+      tags: [Users]
+      summary: Обновить профиль (displayName)
+      operationId: updateCurrentUser
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName:
+                  type: string
+      responses:
+        "200":
+          description: Обновлённый профиль
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  /api/v1/users/me/avatar:
+    post:
+      tags: [Users]
+      summary: Загрузить / заменить аватар текущего пользователя
+      description: |
+        Принимает изображение (JPEG, PNG, WEBP, GIF), сохраняет его
+        и обновляет поле `avatarUrl` в профиле пользователя.
+
+        **Ограничения:** максимальный размер файла — 5 MB.
+        Сервер автоматически ресайзит до 256×256 px.
+
+        Хранилище настраивается через переменные окружения:
+        - `STORAGE_PROVIDER=local` — папка на диске
+        - `STORAGE_PROVIDER=s3` — S3-совместимое хранилище (MinIO / AWS S3)
+      operationId: uploadAvatar
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Файл изображения (JPEG / PNG / WEBP / GIF, макс. 5 MB)
+      responses:
+        "200":
+          description: Аватар обновлён, возвращается обновлённый профиль
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "400":
+          description: Неподдерживаемый формат или превышен размер
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Users]
+      summary: Удалить аватар (сбросить на дефолтный)
+      operationId: deleteAvatar
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Аватар удалён, avatarUrl = null
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  /api/v1/users/me/ai-settings:
+    get:
+      tags: [Users]
+      summary: Получить AI-настройки (ключ замаскирован)
+      operationId: getAiSettings
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: AI-настройки
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedAiSettings"
+    put:
+      tags: [Users]
+      summary: Сохранить AI-настройки (ключ шифруется AES-256)
+      operationId: saveAiSettings
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAiSettingsRequest"
+      responses:
+        "200":
+          description: Настройки сохранены
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedAiSettings"
+        "400":
+          description: Неизвестная модель или несовместимые параметры
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Users]
+      summary: Удалить AI-настройки и ключ
+      operationId: deleteAiSettings
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Удалено
+
+  /api/v1/ai-providers:
+    get:
+      tags: [Users]
+      summary: Справочник провайдеров (модели, возможности, настройки)
+      description: |
+        Используется фронтендом для построения UI выбора провайдера/модели
+        и отображения доступных параметров providerSettings.
+      operationId: listAiProviders
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Справочник
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+                  properties:
+                    defaultModel:
+                      type: string
+                    supportedModels:
+                      type: array
+                      items:
+                        type: string
+                    supportsWebSearch:
+                      type: boolean
+                    supportsExtendedThinking:
+                      type: boolean
+                    supportsReasoningEffort:
+                      type: boolean
+                    settingsSchema:
+                      type: object
+                      description: JSON Schema полей providerSettings для этого провайдера
+
+  # ── Projects ──────────────────────────────
+  /api/v1/projects:
+    get:
+      tags: [Projects]
+      summary: Список проектов пользователя
+      operationId: listProjects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING_AI, ACTIVE, COMPLETED, ARCHIVED]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Список проектов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProjectResponse"
+                  totalElements:
+                    type: integer
+                  totalPages:
+                    type: integer
+                  page:
+                    type: integer
+
+    post:
+      tags: [Projects]
+      summary: Создать проект + AI-декомпозиция (Фаза 1)
+      description: |
+        Создаёт проект, вызывает AI Service для генерации скелета графа.
+        Если `aiEstimate=true` — ИИ добавляет `estimatedHours` к каждой задаче.
+        Фоновое обогащение (Фаза 2) и создание Wiki-стабов стартуют асинхронно.
+      operationId: createProject
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XAiProvider"
+        - $ref: "#/components/parameters/XAiApiKey"
+        - $ref: "#/components/parameters/XAiModel"
+        - $ref: "#/components/parameters/XOllamaBaseUrl"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Проект создан, граф сгенерирован
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ProjectResponse"
+                  - type: object
+                    properties:
+                      graph:
+                        $ref: "#/components/schemas/ProjectGraphResponse"
+        "400":
+          description: Провайдер не задан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный AI API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+        "429":
+          description: Rate limit у провайдера
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+        "502":
+          description: AI Service недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+
+  /api/v1/projects/{projectId}:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Projects]
+      summary: Получить проект
+      operationId: getProject
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Проект
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "403":
+          description: Нет доступа
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Projects]
+      summary: Обновить метаданные (OWNER/ADMIN)
+      operationId: updateProject
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                aiEstimate:
+                  type: boolean
+      responses:
+        "200":
+          description: Обновлённый проект
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+    delete:
+      tags: [Projects]
+      summary: Удалить проект (только OWNER)
+      operationId: deleteProject
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Удалено
+
+  /api/v1/projects/{projectId}/graph:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Projects]
+      summary: Полный граф (узлы + рёбра + назначения)
+      operationId: getProjectGraph
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Граф
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectGraphResponse"
+
+  # ── Project Members ────────────────────────
+  /api/v1/projects/{projectId}/members:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Projects]
+      summary: Список участников проекта
+      operationId: listProjectMembers
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Участники
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectMember"
+    post:
+      tags: [Projects]
+      summary: Пригласить участника (OWNER/ADMIN)
+      operationId: inviteMember
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteMemberRequest"
+      responses:
+        "201":
+          description: Участник добавлен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMember"
+        "404":
+          description: Пользователь с таким email не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Уже участник
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/projects/{projectId}/members/{userId}:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      tags: [Projects]
+      summary: Изменить роль участника (только OWNER)
+      operationId: updateMemberRole
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemberRoleRequest"
+      responses:
+        "200":
+          description: Роль обновлена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMember"
+    delete:
+      tags: [Projects]
+      summary: Удалить участника (OWNER или сам пользователь)
+      operationId: removeMember
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Удалено
+
+  # ── Project Mutate ─────────────────────────
+  /api/v1/projects/{projectId}/mutate:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [AI]
+      summary: Динамическая мутация графа (Фаза 3)
+      description: |
+        При обнаружении цикла в сгенерированном патче:
+        - Если заголовок `X-Enable-Smart-Recovery: true` — запускает Smart Recovery
+          (повторный запрос к ИИ с описанием конфликта). Возвращает `SmartRecoveryResult`.
+        - Если заголовок не указан — возвращает `CycleErrorResponse` (HTTP 400)
+          с `smartRecoveryAvailable: true`.
+      operationId: mutateGraph
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XAiProvider"
+        - $ref: "#/components/parameters/XAiApiKey"
+        - $ref: "#/components/parameters/XAiModel"
+        - $ref: "#/components/parameters/XOllamaBaseUrl"
+        - name: X-Enable-Smart-Recovery
+          in: header
+          required: false
+          description: Если true — при обнаружении цикла запускает Smart Recovery вместо ошибки
+          schema:
+            type: boolean
+            default: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MutateGraphRequest"
+      responses:
+        "200":
+          description: Граф обновлён (в том числе через Smart Recovery)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ProjectGraphResponse"
+                  - $ref: "#/components/schemas/SmartRecoveryResult"
+                discriminator:
+                  propertyName: recovered
+        "400":
+          description: Мутация создаёт цикл (Smart Recovery не запрошен)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CycleErrorResponse"
+        "401":
+          description: Невалидный AI API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+        "429":
+          description: Rate limit у провайдера
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+        "502":
+          description: AI Service недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+
+  /api/v1/projects/{projectId}/blueprints:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Blueprints]
+      summary: Получить / сгенерировать архитектурные диаграммы
+      operationId: getBlueprints
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XAiProvider"
+        - $ref: "#/components/parameters/XAiApiKey"
+        - $ref: "#/components/parameters/XAiModel"
+        - $ref: "#/components/parameters/XOllamaBaseUrl"
+        - name: regenerate
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Mermaid-диаграммы
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlueprintResponse"
+        "401":
+          description: Невалидный AI API-ключ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+        "502":
+          description: AI Service недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+
+  # ── Tasks ─────────────────────────────────
+  /api/v1/projects/{projectId}/tasks:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Tasks]
+      summary: Список задач проекта
+      operationId: listTasks
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [LOCKED, AVAILABLE, IN_PROGRESS, COMPLETED, SKIPPED]
+        - name: assigneeId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: category
+          in: query
+          schema:
+            $ref: "#/components/schemas/TaskCategory"
+      responses:
+        "200":
+          description: Список задач
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskNode"
+    post:
+      tags: [Tasks]
+      summary: Создать задачу вручную
+      operationId: createTask
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Задача создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskNode"
+
+  /api/v1/tasks/{taskId}:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Tasks]
+      summary: Получить задачу (с enrichment, time logs, wiki)
+      operationId: getTask
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Задача
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskNode"
+        "404":
+          description: Не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags: [Tasks]
+      summary: Обновить задачу (title, description, даты, оценка, прогресс)
+      operationId: updateTask
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          description: Обновлена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskNode"
+    delete:
+      tags: [Tasks]
+      summary: Удалить задачу
+      operationId: deleteTask
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Удалена
+        "409":
+          description: Есть незавершённые зависимые задачи
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/tasks/{taskId}/status:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      tags: [Tasks]
+      summary: Сменить статус (с авторазблокировкой + опциональный time log)
+      operationId: updateTaskStatus
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskStatusRequest"
+      responses:
+        "200":
+          description: Обновлённый граф
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskStatusUpdateResponse"
+        "409":
+          description: Недопустимый переход (задача LOCKED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/tasks/{taskId}/assignees:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      tags: [Tasks]
+      summary: Назначить исполнителей (заменяет весь список)
+      description: |
+        Передать пустой массив userIds = снять всех исполнителей.
+        Аватары обновятся на узле ReactFlow.
+      operationId: assignTask
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignTaskRequest"
+      responses:
+        "200":
+          description: Задача с обновлёнными исполнителями
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskNode"
+        "400":
+          description: Один из userId не является участником проекта
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/tasks/{taskId}/time-logs:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Tasks]
+      summary: Журнал трудозатрат по задаче
+      operationId: listTimeLogs
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Список time log записей
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TimeLog"
+    post:
+      tags: [Tasks]
+      summary: Залогировать время (MEMBER и выше)
+      operationId: createTimeLog
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTimeLogRequest"
+      responses:
+        "201":
+          description: Запись создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeLog"
+
+  /api/v1/time-logs/{logId}:
+    parameters:
+      - name: logId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Tasks]
+      summary: Удалить запись о времени (автор или ADMIN/OWNER)
+      operationId: deleteTimeLog
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Удалена
+
+  # ── Edges ─────────────────────────────────
+  /api/v1/projects/{projectId}/edges:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Edges]
+      summary: Добавить ребро (DFS-валидация + опциональный Smart Recovery)
+      description: |
+        При обнаружении цикла поведение определяется заголовком
+        `X-Enable-Smart-Recovery`. Аналогично `/mutate`.
+      operationId: createEdge
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: X-Enable-Smart-Recovery
+          in: header
+          required: false
+          schema:
+            type: boolean
+            default: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEdgeRequest"
+      responses:
+        "201":
+          description: Ребро добавлено
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdgeResponse"
+        "400":
+          description: Создаёт цикл
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CycleErrorResponse"
+
+  /api/v1/edges/{edgeId}:
+    parameters:
+      - name: edgeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Edges]
+      summary: Удалить ребро
+      operationId: deleteEdge
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Ребро удалено, обновлённый граф
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectGraphResponse"
+
+  # ── Wiki ──────────────────────────────────
+  /api/v1/projects/{projectId}/wiki:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Wiki]
+      summary: Список Wiki-страниц проекта
+      operationId: listWikiPages
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: taskId
+          in: query
+          description: Фильтр — только страницы конкретной задачи
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Список страниц
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WikiPageSummary"
+    post:
+      tags: [Wiki]
+      summary: Создать Wiki-страницу вручную
+      operationId: createWikiPage
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWikiPageRequest"
+      responses:
+        "201":
+          description: Страница создана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiPage"
+
+  /api/v1/projects/{projectId}/wiki/media:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Wiki]
+      summary: Список загруженных медиафайлов проекта
+      description: Используется для медиа-браузера в редакторе Wiki.
+      operationId: listWikiMedia
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: mimeType
+          in: query
+          description: Фильтр по типу (image/*, application/pdf и т.д.)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Список файлов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WikiMedia"
+    post:
+      tags: [Wiki]
+      summary: Загрузить медиафайл для вставки в Wiki (MEMBER и выше)
+      description: |
+        **Поддерживаемые типы:**
+        - Изображения: `image/jpeg`, `image/png`, `image/gif`, `image/webp`, `image/svg+xml`
+        - Документы: `application/pdf`
+        - Архивы: `application/zip`
+        - Прочие бинарные файлы
+
+        **Ограничения:** максимальный размер — 20 MB на файл.
+      operationId: uploadWikiMedia
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Файл для загрузки (макс. 20 MB)
+      responses:
+        "201":
+          description: Файл загружен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiMedia"
+        "400":
+          description: Файл слишком большой или запрещённый тип
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/wiki/media/{mediaId}:
+    parameters:
+      - name: mediaId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Wiki]
+      summary: Удалить медиафайл (ADMIN/OWNER или автор загрузки)
+      description: |
+        Удаляет файл из хранилища. Если файл используется в Wiki-страницах —
+        возвращает 409 со списком страниц.
+      operationId: deleteWikiMedia
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Файл удалён
+        "409":
+          description: Файл используется в одной или нескольких Wiki-страницах
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - type: object
+                    properties:
+                      usedInPages:
+                        type: array
+                        description: ID Wiki-страниц со ссылкой на этот файл
+                        items:
+                          type: string
+                          format: uuid
+
+  /api/v1/wiki/{pageId}:
+    parameters:
+      - name: pageId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Wiki]
+      summary: Получить Wiki-страницу (полный контент)
+      operationId: getWikiPage
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Wiki-страница
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiPage"
+        "404":
+          description: Не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags: [Wiki]
+      summary: Обновить Wiki-страницу (MEMBER и выше)
+      description: Создаёт новую версию страницы (version инкрементируется).
+      operationId: updateWikiPage
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWikiPageRequest"
+      responses:
+        "200":
+          description: Обновлённая страница
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiPage"
+        "404":
+          description: Не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Wiki]
+      summary: Удалить Wiki-страницу (ADMIN/OWNER)
+      operationId: deleteWikiPage
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Удалена
+
+  /api/v1/wiki/{pageId}/ai-regenerate:
+    parameters:
+      - name: pageId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Wiki]
+      summary: Перегенерировать Wiki-страницу с помощью ИИ
+      description: |
+        ИИ берёт текущий контент как контекст и предлагает обновлённую версию
+        с актуальными ссылками и описанием. Возвращает новую версию (authorType=AI).
+      operationId: regenerateWikiPage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XAiProvider"
+        - $ref: "#/components/parameters/XAiApiKey"
+        - $ref: "#/components/parameters/XAiModel"
+        - $ref: "#/components/parameters/XOllamaBaseUrl"
+      responses:
+        "200":
+          description: Обновлённая AI-версия страницы
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiPage"
+        "502":
+          description: AI Service недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderErrorResponse"
+
+  # ── Action Log ────────────────────────────
+  /api/v1/projects/{projectId}/action-log:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [ActionLog]
+      summary: Лог действий проекта (пользователи + ИИ + система)
+      operationId: getActionLog
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: actorType
+          in: query
+          schema:
+            type: string
+            enum: [USER, AI, SYSTEM]
+        - name: eventType
+          in: query
+          schema:
+            type: string
+            enum:
+              - PROJECT_CREATED
+              - PROJECT_UPDATED
+              - MEMBER_INVITED
+              - MEMBER_ROLE_CHANGED
+              - MEMBER_REMOVED
+              - TASK_CREATED
+              - TASK_UPDATED
+              - TASK_STATUS_CHANGED
+              - TASK_ASSIGNED
+              - TASK_UNASSIGNED
+              - TASK_DELETED
+              - TIME_LOGGED
+              - EDGE_CREATED
+              - EDGE_DELETED
+              - GRAPH_MUTATED
+              - SMART_RECOVERY_APPLIED
+              - AI_SKELETON_GENERATED
+              - AI_ENRICHMENT_COMPLETED
+              - WIKI_PAGE_CREATED
+              - WIKI_PAGE_UPDATED
+              - BLUEPRINT_GENERATED
+              - GITHUB_TASK_CLOSED
+        - name: taskId
+          in: query
+          description: Фильтр по задаче
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Лог событий
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ActionLogEntry"
+                  totalElements:
+                    type: integer
+                  totalPages:
+                    type: integer
+
+  # ── GitHub Webhooks ───────────────────────
+  /api/v1/webhooks/github/{projectId}:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [GitHub]
+      summary: Входящий webhook (push events → автозакрытие задач)
+      description: |
+        Парсит коммиты, ищет паттерн #task-{id}-done,
+        переводит задачу в COMPLETED и пишет запись в ActionLog.
+      operationId: handleGithubWebhook
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema:
+            type: string
+            example: "sha256=abc123..."
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema:
+            type: string
+            example: "push"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GitHubWebhookPayload"
+      responses:
+        "200":
+          description: Обработано
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  processedCommits:
+                    type: integer
+                  closedTasks:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+        "401":
+          description: Невалидная подпись
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/internal/enrichment-callback:
+    post:
+      tags: [Tasks]
+      summary: Колбэк от AI Service с результатом обогащения задачи
+      description: |
+        Вызывается AI Service по завершении фонового обогащения.
+        Не вызывается фронтендом напрямую.
+        Защищён заголовком X-Internal-Secret (тот же секрет, что у AI Service).
+      operationId: enrichmentCallback
+      parameters:
+        - name: X-Internal-Secret
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrichTaskCallback"
+      responses:
+        "200":
+          description: Результат принят и сохранён
+        "401":
+          description: Невалидный X-Internal-Secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: taskId не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+security:
+  - BearerAuth: []
