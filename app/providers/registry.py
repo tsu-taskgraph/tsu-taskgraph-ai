@@ -146,12 +146,14 @@ def get_provider(config: ProviderConfig) -> BaseProvider:
 
 PROVIDERS_DIRECTORY = {
     "gemini": {
-        "defaultModel": "gemini-2.5-pro",
+        "defaultModel": "gemini-3.5-flash",
         "supportedModels": [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro",
+            "gemini-3-pro",
+            "gemini-3-flash",
             "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash"
+            "gemini-2.5-flash"
         ],
         "supportsWebSearch": True,
         "supportsExtendedThinking": True,
@@ -169,15 +171,16 @@ PROVIDERS_DIRECTORY = {
         }
     },
     "openai": {
-        "defaultModel": "gpt-4o",
+        "defaultModel": "gpt-5.3-instant",
         "supportedModels": [
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o1",
-            "o1-mini",
-            "o1-preview",
+            "gpt-5.4",
+            "gpt-5.3-instant",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "o4-mini",
             "o3-mini",
-            "o4-mini"
+            "gpt-4o",
+            "gpt-4o-mini"
         ],
         "supportsWebSearch": False,
         "supportsExtendedThinking": False,
@@ -195,12 +198,14 @@ PROVIDERS_DIRECTORY = {
         }
     },
     "anthropic": {
-        "defaultModel": "claude-3-5-sonnet-20241022",
+        "defaultModel": "claude-sonnet-4.6",
         "supportedModels": [
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-7-sonnet"
+            "claude-fable-5",
+            "claude-opus-4.8",
+            "claude-sonnet-4.6",
+            "claude-haiku-4.5",
+            "claude-3-7-sonnet",
+            "claude-3-5-sonnet"
         ],
         "supportsWebSearch": False,
         "supportsExtendedThinking": True,
@@ -220,9 +225,10 @@ PROVIDERS_DIRECTORY = {
         "defaultModel": "llama-3.3-70b-versatile",
         "supportedModels": [
             "llama-3.3-70b-versatile",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
             "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
-            "gemma2-9b-it"
+            "groq/compound",
+            "groq/compound-mini"
         ],
         "supportsWebSearch": False,
         "supportsExtendedThinking": False,
@@ -241,9 +247,9 @@ PROVIDERS_DIRECTORY = {
         "defaultModel": "mistral-large-latest",
         "supportedModels": [
             "mistral-large-latest",
+            "codestral-latest",
             "mistral-medium-latest",
-            "mistral-small-latest",
-            "codestral-latest"
+            "mistral-small-latest"
         ],
         "supportsWebSearch": False,
         "supportsExtendedThinking": False,
