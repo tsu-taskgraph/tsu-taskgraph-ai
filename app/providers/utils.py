@@ -61,17 +61,6 @@ async def safe_post(
         handle_provider_error(str(e))
 
 
-def map_common_params(settings: dict[str, Any] | None) -> dict[str, Any]:
-    if not settings:
-        return {}
-    params: dict[str, Any] = {}
-    if settings.get("temperature") is not None:
-        params["temperature"] = settings["temperature"]
-    if settings.get("maxTokens") is not None:
-        params["max_tokens"] = settings["maxTokens"]
-    return params
-
-
 def _normalize_category(category: Any) -> str:
     valid_categories = {"BACKEND", "FRONTEND", "DEVOPS", "TESTING", "DOCUMENTATION", "DESIGN", "OTHER"}
     if category and isinstance(category, str):

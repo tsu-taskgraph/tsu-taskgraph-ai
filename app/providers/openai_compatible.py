@@ -6,7 +6,6 @@ from app.providers.base import BaseProvider
 from app.providers.utils import (
     build_messages,
     extract_json,
-    map_common_params,
     safe_post,
 )
 from app.schemas.common import ProviderConfig
@@ -32,9 +31,6 @@ class OpenAICompatibleProvider(BaseProvider):
             timeout=60.0,
         )
 
-    def build_params(self, settings: dict[str, Any] | None) -> dict[str, Any]:
-        return map_common_params(settings)
-
     async def _call_llm(
         self,
         system: str,
@@ -46,10 +42,6 @@ class OpenAICompatibleProvider(BaseProvider):
             "model": model,
             "messages": build_messages(system, user),
         }
-        settings_dict = (
-            self.config.settings.model_dump(by_alias=True) if self.config.settings else None
-        )
-        payload.update(self.build_params(settings_dict))
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 

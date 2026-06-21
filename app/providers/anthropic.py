@@ -5,24 +5,9 @@ import httpx
 from app.providers.base import BaseProvider
 from app.providers.utils import (
     extract_json,
-    map_common_params,
     safe_post,
 )
 from app.schemas.common import ProviderConfig
-
-
-def _build_params(settings: dict[str, Any] | None) -> dict[str, Any]:
-    params = map_common_params(settings)
-    if settings:
-        extended_thinking = settings.get("extendedThinking")
-        thinking_budget = settings.get("thinkingTokenBudget")
-        if extended_thinking and thinking_budget:
-            params["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
-            params.pop("temperature", None)
-    return params
 
 
 class AnthropicProvider(BaseProvider):
@@ -61,10 +46,6 @@ class AnthropicProvider(BaseProvider):
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
-        settings_dict = (
-            self.config.settings.model_dump(by_alias=True) if self.config.settings else None
-        )
-        payload.update(_build_params(settings_dict))
 
         response = await safe_post(self.client, "/messages", payload)
         data = response.json()
