@@ -39,6 +39,11 @@ def enrich_task_background(self, task_request_data: dict, job_id: str) -> None:
                 "taskId": task_request_data.get("task", {}).get("taskId"),
                 "status": "SUCCESS",
                 "result": result,
+                "checklist": result.get("checklist", []),
+                "pitfalls": result.get("pitfalls", []),
+                "links": result.get("links", []),
+                "rawMarkdown": result.get("rawMarkdown", ""),
+                "wikiDraft": result.get("wikiDraft"),
                 "error": None,
                 "providerError": None
             }
@@ -48,6 +53,11 @@ def enrich_task_background(self, task_request_data: dict, job_id: str) -> None:
                 "taskId": task_request_data.get("task", {}).get("taskId"),
                 "status": "FAILED",
                 "result": None,
+                "checklist": None,
+                "pitfalls": None,
+                "links": None,
+                "rawMarkdown": None,
+                "wikiDraft": None,
                 "error": str(e),
                 "providerError": str(e)
             }
