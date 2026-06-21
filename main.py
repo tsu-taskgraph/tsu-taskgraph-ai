@@ -12,28 +12,10 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="TaskGraph AI Service Bridge",
-        description="""
-        Микросервис-мост на Python/FastAPI. Вызывается только из Core API.
-        
-        ## Провайдеры
-        | Провайдер  | Тип      | Ключ | Web Search | Extended Thinking / Reasoning |
-        |------------|----------|------|------------|-------------------------------|
-        | gemini     | облако   | да   | да         | thinkingBudget                |
-        | openai     | облако   | да   | нет        | reasoningEffort (o1/o3/o4)    |
-        | anthropic  | облако   | да   | нет        | extendedThinking (claude-3-7+)|
-        | groq       | облако   | да   | нет        | groqReasoningFormat           |
-        | mistral    | облако   | да   | нет        | нет                           |
-        | ollama     | локально | нет  | нет        | зависит от модели             |
-        
-        ## Безопасность
-        Сервис принимает защищённые запросы только с заголовком `X-Internal-Secret`.
-        API-ключи не логируются и не сохраняются.
-        """,
         version=settings.app_version,
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
-        contact={"name": "Nikita Lugachev", "email": "nikitalugachev149th@gmail.com"},
         servers=[
             {"url": "http://localhost:8000", "description": "Local development"},
             {"url": "http://ai-service:8000", "description": "Docker internal"},
