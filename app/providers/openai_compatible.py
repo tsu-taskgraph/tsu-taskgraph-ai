@@ -57,3 +57,14 @@ class OpenAICompatibleProvider(BaseProvider):
         data = response.json()
         content = data["choices"][0]["message"]["content"]
         return extract_json(content)
+
+    async def list_models(self) -> list[str]:
+        try:
+            response = await self.client.get("/models")
+            response.raise_for_status()
+            data = response.json()
+            models = [m["id"] for m in data.get("data", [])]
+            return sorted(models)
+        except Exception as e:
+            print(f"Failed to fetch models from OpenAICompatible: {e}")
+            return []

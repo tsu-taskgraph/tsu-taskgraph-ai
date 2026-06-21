@@ -67,3 +67,14 @@ class OllamaProvider(BaseProvider):
         data = response.json()
         text = data["message"]["content"]
         return extract_json(text)
+
+    async def list_models(self) -> list[str]:
+        try:
+            response = await self.client.get("/api/tags")
+            response.raise_for_status()
+            data = response.json()
+            models = [m["name"] for m in data.get("models", [])]
+            return sorted(models)
+        except Exception as e:
+            print(f"Failed to fetch models from Ollama: {e}")
+            return []

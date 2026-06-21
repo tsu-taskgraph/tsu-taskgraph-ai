@@ -142,3 +142,136 @@ def get_provider(config: ProviderConfig) -> BaseProvider:
         )
 
     return provider_class(config)
+
+
+PROVIDERS_DIRECTORY = {
+    "gemini": {
+        "defaultModel": "gemini-2.5-pro",
+        "supportedModels": [
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash"
+        ],
+        "supportsWebSearch": True,
+        "supportsExtendedThinking": True,
+        "supportsReasoningEffort": False,
+        "settingsSchema": {
+            "type": "object",
+            "properties": {
+                "temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.7},
+                "maxTokens": {"type": "integer", "minimum": 1, "default": 4096},
+                "thinkingBudget": {"type": "integer", "minimum": 0, "description": "Бюджет thinking-токенов для "
+                                                                                   "Gemini 2.5+"},
+                "enableWebSearch": {"type": "boolean", "default": False, "description": "Включить Google Search "
+                                                                                        "Grounding"}
+            }
+        }
+    },
+    "openai": {
+        "defaultModel": "gpt-4o",
+        "supportedModels": [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o1",
+            "o1-mini",
+            "o1-preview",
+            "o3-mini",
+            "o4-mini"
+        ],
+        "supportsWebSearch": False,
+        "supportsExtendedThinking": False,
+        "supportsReasoningEffort": True,
+        "settingsSchema": {
+            "type": "object",
+            "properties": {
+                "temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.7},
+                "maxTokens": {"type": "integer", "minimum": 1, "default": 4096},
+                "reasoningEffort": {"type": "string", "enum": ["low", "medium", "high"], "description": "Глубина рассуждений для моделей o1/o3/o4"}
+            }
+        }
+    },
+    "anthropic": {
+        "defaultModel": "claude-3-5-sonnet-20241022",
+        "supportedModels": [
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+            "claude-3-opus-20240229",
+            "claude-3-7-sonnet"
+        ],
+        "supportsWebSearch": False,
+        "supportsExtendedThinking": True,
+        "supportsReasoningEffort": False,
+        "settingsSchema": {
+            "type": "object",
+            "properties": {
+                "temperature": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0},
+                "maxTokens": {"type": "integer", "minimum": 1, "default": 4096},
+                "extendedThinking": {"type": "boolean", "default": False, "description": "Включить extended thinking для Claude 3.7+"},
+                "thinkingTokenBudget": {"type": "integer", "minimum": 1, "description": "Бюджет токенов на рассуждения"}
+            }
+        }
+    },
+    "groq": {
+        "defaultModel": "llama-3.3-70b-versatile",
+        "supportedModels": [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it"
+        ],
+        "supportsWebSearch": False,
+        "supportsExtendedThinking": False,
+        "supportsReasoningEffort": False,
+        "settingsSchema": {
+            "type": "object",
+            "properties": {
+                "temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.7},
+                "maxTokens": {"type": "integer", "minimum": 1, "default": 4096},
+                "groqReasoningFormat": {"type": "string", "enum": ["parsed", "raw", "hidden"], "description": "Формат вывода рассуждений модели"}
+            }
+        }
+    },
+    "mistral": {
+        "defaultModel": "mistral-large-latest",
+        "supportedModels": [
+            "mistral-large-latest",
+            "mistral-medium-latest",
+            "mistral-small-latest",
+            "codestral-latest"
+        ],
+        "supportsWebSearch": False,
+        "supportsExtendedThinking": False,
+        "supportsReasoningEffort": False,
+        "settingsSchema": {
+            "type": "object",
+            "properties": {
+                "temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.7},
+                "maxTokens": {"type": "integer", "minimum": 1, "default": 4096}
+            }
+        }
+    },
+    "ollama": {
+        "defaultModel": "llama3",
+        "supportedModels": [
+            "llama3",
+            "mistral",
+            "qwen2.5-coder",
+            "phi3",
+            "gemma2"
+        ],
+        "supportsWebSearch": False,
+        "supportsExtendedThinking": False,
+        "supportsReasoningEffort": False,
+        "settingsSchema": {
+            "type": "object",
+            "properties": {
+                "temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.7},
+                "ollamaNumCtx": {"type": "integer", "minimum": 1, "default": 2048, "description": "Размер "
+                                                                                                  "контекстного окна "
+                                                                                                  "(num_ctx)"},
+                "ollamaNumGpu": {"type": "integer", "minimum": 0, "description": "Количество слоев для GPU (num_gpu)"}
+            }
+        }
+    }
+}

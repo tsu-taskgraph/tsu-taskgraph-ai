@@ -1,8 +1,20 @@
+from typing import Any
 from pydantic import BaseModel, Field
 
 AiProviderType = str
 
 PROVIDER_CHOICES = ["gemini", "openai", "anthropic", "groq", "mistral", "ollama"]
+
+
+class ProviderDirectoryEntry(BaseModel):
+    default_model: str = Field(..., alias="defaultModel")
+    supported_models: list[str] = Field(..., alias="supportedModels")
+    supports_web_search: bool = Field(..., alias="supportsWebSearch")
+    supports_extended_thinking: bool = Field(..., alias="supportsExtendedThinking")
+    supports_reasoning_effort: bool = Field(..., alias="supportsReasoningEffort")
+    settings_schema: dict[str, Any] = Field(..., alias="settingsSchema")
+
+    model_config = {"populate_by_name": True}
 
 
 class ProviderSettings(BaseModel):

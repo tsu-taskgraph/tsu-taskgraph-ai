@@ -9,6 +9,8 @@ from app.schemas.mutation import MutateGraphRequest, MutateGraphResponse
 from app.schemas.recovery import SmartRecoveryRequest, SmartRecoveryResponse
 from app.schemas.skeleton import GenerateSkeletonRequest, GenerateSkeletonResponse
 from app.schemas.wiki import GenerateWikiRequest, GenerateWikiResponse
+from app.schemas.common import ProviderDirectoryEntry
+from app.schemas.health import ProviderCheckRequest
 
 router = APIRouter(dependencies=[Depends(require_internal_secret)])
 
@@ -113,3 +115,29 @@ async def generate_wiki(body: GenerateWikiRequest) -> GenerateWikiResponse:
     provider = get_provider(body.provider_config)
     result = await provider.generate_wiki(body.model_dump(by_alias=True))
     return GenerateWikiResponse(**result)
+
+
+@router.get(
+    "/providers",
+    response_model=dict[str, ProviderDirectoryEntry],
+    tags=["Providers Directory"]
+)
+async def list_providers() -> dict[str, ProviderDirectoryEntry]:
+    from app.providers.registry import PROVIDERS_DIRECTORY
+    return PROVIDERS_DIRECTORY
+
+
+@router.post(
+    "/providers/models",
+    response_model=list[str],
+    responses=COMMON_AI_RESPONSES,
+    tags=["Providers Directory"]
+)
+async def list_realtime_models(body: ProviderCheckRequest) -> list[str]:
+    provider = get_provider(body.provider_config)
+    try:
+        models = await provider.list_models()
+    finally:
+        if hasattr(provider, "client") and provider.client is not None:
+            await provider.client.aclose()
+    return models

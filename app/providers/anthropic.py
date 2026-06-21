@@ -70,3 +70,14 @@ class AnthropicProvider(BaseProvider):
         data = response.json()
         text = data["content"][0]["text"]
         return extract_json(text)
+
+    async def list_models(self) -> list[str]:
+        try:
+            response = await self.client.get("/models")
+            response.raise_for_status()
+            data = response.json()
+            models = [m["id"] for m in data.get("data", [])]
+            return sorted(models)
+        except Exception as e:
+            print(f"Failed to fetch models from Anthropic: {e}")
+            return []

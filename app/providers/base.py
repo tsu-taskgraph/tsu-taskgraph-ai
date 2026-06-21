@@ -77,6 +77,9 @@ class BaseProvider(ABC):
                 **self._extra_check_fields(None),
             }
 
+    async def list_models(self) -> list[str]:
+        return []
+
     async def generate_skeleton(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("skeleton", prompt_data)
         result = await self._call_llm_safe(system, user)
