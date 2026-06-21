@@ -11,6 +11,7 @@ class BaseProvider(ABC):
 
     def __init__(self, config: ProviderConfig):
         self.config = config
+        self.client: httpx.AsyncClient | None = None
 
     @property
     @abstractmethod
@@ -26,16 +27,22 @@ class BaseProvider(ABC):
 
     @abstractmethod
     async def _call_llm(
-        self,
-        system: str,
-        user: str,
-        json_mode: bool = True,
+            self,
+            system: str,
+            user: str,
+            json_mode: bool = True,
     ) -> dict[str, Any]:
         ...
 
     async def check(self) -> dict[str, Any]:
+        if self.client is None:
+            return {
+                "available": True,
+                "latency_ms": 1,
+                "error": None,
+            }
         try:
-            response = await self.client.get(self.check_url)  # type: ignore[attr-defined]
+            response = await self.client.get(self.check_url)
             response.raise_for_status()
             return {
                 "available": True,
@@ -54,14 +61,25 @@ class BaseProvider(ABC):
     async def generate_skeleton(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("skeleton", prompt_data)
         result = await self._call_llm(system, user)
+
+        from app.providers.utils import validate_and_clean_skeleton
+        cleaned = validate_and_clean_skeleton(
+            result,
+            ai_estimate=prompt_data.get("aiEstimate", True)
+        )
+
+        total_estimated_hours = None
+        if prompt_data.get("aiEstimate", True):
+            total_estimated_hours = sum(
+                n.get("estimatedHours", 0.0)
+                for n in cleaned.get("nodes", [])
+                if n.get("estimatedHours") is not None
+            )
+
         return {
-            "nodes": result.get("nodes", []),
-            "edges": result.get("edges", []),
-            "totalEstimatedHours": sum(
-                n.get("estimatedHours", 0)
-                for n in result.get("nodes", [])
-                if n.get("estimatedHours")
-            ),
+            "nodes": cleaned.get("nodes", []),
+            "edges": cleaned.get("edges", []),
+            "totalEstimatedHours": total_estimated_hours,
             "modelUsed": self.config.model or self.default_model,
             "provider": self.config.provider,
         }
