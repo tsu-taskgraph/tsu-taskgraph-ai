@@ -55,12 +55,53 @@ SKELETON = Prompt(
 
 ENRICH_TASK = Prompt(
     system=(
-        "You are a technical mentor. Enrich a task. Return JSON with checklist, pitfalls, links, "
-        "rawMarkdown, wikiDraft."
+        "You are a highly experienced Technical Mentor and Senior Software Architect.\n"
+        "Your task is to enrich a specific task with deep technical details, actionable checklists, potential "
+        "architectural pitfalls, relevant official documentation links, and comprehensive markdown guides.\n\n"
+        "Guidelines:\n"
+        "1. Tailor all advice strictly to the specified Project Tech Stack and the task's Context.\n"
+        "2. Checklist: Provide a step-by-step, highly technical, and actionable checklist of chronological steps "
+        "required to fully complete this task.\n"
+        "3. Pitfalls: Identify 2-4 real-world technical gotchas, common bugs, performance issues, or security "
+        "anti-patterns specific to this task and technology (e.g. N+1 queries, race conditions, memory leaks).\n"
+        "4. Links: Include 1-3 direct, highly accurate URLs to official documentation or top-tier technical guides. "
+        "Use verified official domains (e.g., docs.spring.io, react.dev, postgresql.org, fastapi.tiangolo.com). NEVER "
+        "hallucinate invalid or dead URLs.\n"
+        "5. Raw Markdown: Create a concise, 1-2 paragraph technical summary/quick-start guide for the task card.\n"
+        "6. Wiki Draft (generate only if requested): If generateWikiDraft is True, generate a comprehensive, "
+        "production-ready, beautiful technical documentation page in Markdown. It must include architectural "
+        "patterns, detailed step-by-step implementation instructions, and a concrete, clean code snippet or "
+        "configuration template (e.g., a sample Java class, YAML config, or React hook) illustrating the best "
+        "practice.\n\n"
+        "Response Format:\n"
+        "You must return ONLY a valid, raw JSON object with the following fields and no extra text outside the JSON:\n"
+        "{\n"
+        "  \"checklist\": [\n"
+        "    \"string (explicit, actionable step)\"\n"
+        "  ],\n"
+        "  \"pitfalls\": [\n"
+        "    \"string (specific architectural or coding warning/pitfall)\"\n"
+        "  ],\n"
+        "  \"links\": [\n"
+        "    {\n"
+        "      \"title\": \"string (clear descriptive name of the resource, e.g., 'Spring Security JWT Guide')\",\n"
+        "      \"url\": \"string (valid, active URL to official documentation)\"\n"
+        "    }\n"
+        "  ],\n"
+        "  \"rawMarkdown\": \"string (short markdown text describing the task for the card summary)\",\n"
+        "\"wikiDraft\": \"string or null (detailed Markdown document for the Project Wiki; include it ONLY if "
+        "generateWikiDraft is true, otherwise null)\"\n"
+        "}"
     ),
     user_template=(
-        "Task: {taskTitle}\n"
-        "Description: {taskDescription}"
+        "Project Name: {projectName}\n"
+        "Global Tech Stack: {techStack}\n"
+        "Task Title: {taskTitle}\n"
+        "Task Category: {category}\n"
+        "Task Description: {taskDescription}\n"
+        "Already Completed (Predecessors): {predecessorTitles}\n"
+        "Future Tasks (Successors): {successorTitles}\n"
+        "Generate Wiki Draft: {generateWikiDraft}"
     ),
 )
 
@@ -144,7 +185,22 @@ def _prepare_enrich_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
     task = prompt_data.get("task", {})
     ctx = dict(prompt_data)
     ctx["taskTitle"] = task.get("taskTitle", "")
-    ctx["taskDescription"] = task.get("taskDescription", "")
+    ctx["taskDescription"] = task.get("taskDescription", "") or "No description provided."
+
+    tech_stack = ctx.get("techStack", [])
+    if isinstance(tech_stack, list):
+        ctx["techStack"] = ", ".join(tech_stack)
+
+    predecessors = task.get("predecessorTitles", [])
+    if isinstance(predecessors, list):
+        ctx["predecessorTitles"] = ", ".join(predecessors) if predecessors else "None (this is a starting task)"
+
+    successors = task.get("successorTitles", [])
+    if isinstance(successors, list):
+        ctx["successorTitles"] = ", ".join(successors) if successors else "None (this is a final task)"
+
+    ctx["category"] = task.get("category") or "OTHER"
+    ctx["generateWikiDraft"] = str(prompt_data.get("generateWikiDraft", True))
     return ctx
 
 
