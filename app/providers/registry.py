@@ -3,6 +3,12 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from app.providers.base import BaseProvider
+from app.providers.openai import OpenAIProvider
+from app.providers.gemini import GeminiProvider
+from app.providers.ollama import OllamaProvider
+from app.providers.anthropic import AnthropicProvider
+from app.providers.groq import GroqProvider
+from app.providers.mistral import MistralProvider
 from app.schemas.common import ProviderConfig
 
 
@@ -118,4 +124,21 @@ def get_provider(config: ProviderConfig) -> BaseProvider:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"API key is required for provider '{config.provider}'",
         )
-    return StubProvider(config)
+
+    providers = {
+        "gemini": GeminiProvider,
+        "openai": OpenAIProvider,
+        "anthropic": AnthropicProvider,
+        "groq": GroqProvider,
+        "mistral": MistralProvider,
+        "ollama": OllamaProvider,
+    }
+
+    provider_class = providers.get(config.provider)
+    if not provider_class:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported provider '{config.provider}'",
+        )
+
+    return provider_class(config)
