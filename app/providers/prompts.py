@@ -165,12 +165,59 @@ MUTATE_GRAPH = Prompt(
 
 SMART_RECOVERY = Prompt(
     system=(
-        "You are a technical lead. Fix a cyclic patch. Return JSON with newNodes, newEdges, "
-        "recalculatedTotalHours, reasoning."
+        "You are an expert Technical Lead and Software Architect.\n"
+        "Your task is to resolve a cyclic dependency (deadlock) that was created when trying to apply a graph "
+        "mutation patch.\n"
+        "You will receive the current state of the project graph (existing nodes and edges), the new patch that "
+        "failed because it introduced a cycle, and the specific node IDs that formed the cycle.\n\n"
+        "Your goal is to return a FIXED version of the patch ('fixedPatch') that achieves the same user goal but with "
+        "modified dependencies so that NO cycles are introduced. The combined graph (current graph + fixed patch) "
+        "MUST be a strict Directed Acyclic Graph (DAG).\n\n"
+        "Strategies for Resolving Cycles:\n"
+        "1. Reverse incorrect dependencies: If a cycle is formed because a prerequisite task was incorrectly set to "
+        "depend on a subsequent task (e.g. database setup blocking on frontend integration), reverse the direction of "
+        "that dependency.\n"
+        "2. Deconstruct / Split tasks: If two tasks mutually block each other, break one task down into two sub-tasks "
+        "(e.g., 'redis_api_spec' and 'redis_implementation') and place them in the correct dependency flow (e.g., "
+        "'redis_api_spec' -> 'frontend' -> 'redis_implementation').\n"
+        "3. Re-route connections: Move the starting or ending point of the problematic new edges to more appropriate "
+        "nodes in the graph.\n\n"
+        "Response Format:\n"
+        "You must return ONLY a valid, raw JSON object with the following fields and no extra text outside the JSON:\n"
+        "{\n"
+        "  \"fixedPatch\": {\n"
+        "    \"newNodes\": [\n"
+        "      {\n"
+        "        \"tempId\": \"string (unique identifier like 'redis_setup')\",\n"
+        "        \"title\": \"string (actionable task title)\",\n"
+        "        \"description\": \"string (brief description of requirements)\",\n"
+        "\"category\": \"string (MUST be one of: BACKEND, FRONTEND, DEVOPS, TESTING, DOCUMENTATION, DESIGN, OTHER)\",\n"
+        "        \"estimatedHours\": number (positive float or integer)\n"
+        "      }\n"
+        "    ],\n"
+        "    \"newEdges\": [\n"
+        "      {\n"
+        "        \"sourceTempIdOrUuid\": \"string (UUID of existing task or tempId of new task)\",\n"
+        "        \"targetTempIdOrUuid\": \"string (UUID of existing task or tempId of new task)\"\n"
+        "      }\n"
+        "    ],\n"
+        "\"recalculatedTotalHours\": number or null (optional, estimated total project hours after adding this "
+        "patch),\n"
+        "    \"reasoning\": \"string (brief technical explanation of why this fix is correct)\"\n"
+        "  },\n"
+        "\"recoveryNote\": \"string (a clear, helpful explanation in Russian for the user of how the cycle was "
+        "resolved, e.g., 'The relationship between A and B created a cycle, so the AI changed the direction of the "
+        "relationship...')\"\n"
+        "}"
     ),
     user_template=(
-        "Cycle nodes: {cycleNodes}\n"
-        "Failed patch: {failedMutation}"
+        "Project Name: {projectName}\n"
+        "Tech Stack: {techStack}\n\n"
+        "Problematic Cycle Nodes: {cycleNodesFormatted}\n\n"
+        "Current Graph Nodes:\n{currentGraphNodes}\n\n"
+        "Current Graph Edges (Dependencies):\n{currentGraphEdges}\n\n"
+        "Failed Patch New Nodes:\n{failedNewNodes}\n\n"
+        "Failed Patch New Edges (Dependencies):\n{failedNewEdges}"
     ),
 )
 
@@ -293,11 +340,59 @@ def _prepare_mutate_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
     return ctx
 
 
+def _prepare_recovery_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
+    ctx = dict(prompt_data)
+
+    tech_stack = ctx.get("techStack", [])
+    if isinstance(tech_stack, list):
+        ctx["techStack"] = ", ".join(tech_stack)
+
+    cycle_nodes = ctx.get("cycleNodes", [])
+    if isinstance(cycle_nodes, list):
+        ctx["cycleNodesFormatted"] = ", ".join(cycle_nodes)
+    else:
+        ctx["cycleNodesFormatted"] = str(cycle_nodes)
+
+    current_graph = ctx.get("currentGraph", {})
+    if isinstance(current_graph, dict):
+        nodes_list = []
+        for n in current_graph.get("nodes", []):
+            nid = n.get("id") or n.get("tempId") or n.get("temp_id")
+            nodes_list.append(f"- ID/UUID: '{nid}' | Title: '{n.get('title')}' | Status: '{n.get('status')}'")
+
+        edges_list = []
+        for e in current_graph.get("edges", []):
+            src = e.get("sourceTaskId") or e.get("source_task_id") or e.get("sourceTempId")
+            tgt = e.get("targetTaskId") or e.get("target_task_id") or e.get("targetTempId")
+            edges_list.append(f"  '{src}' -> '{tgt}'")
+
+        ctx["currentGraphNodes"] = "\n".join(nodes_list) if nodes_list else "None"
+        ctx["currentGraphEdges"] = "\n".join(edges_list) if edges_list else "None"
+
+    failed_mutation = ctx.get("failedMutation", {})
+    if isinstance(failed_mutation, dict):
+        new_nodes_list = []
+        for n in failed_mutation.get("newNodes", []) or failed_mutation.get("new_nodes", []):
+            new_nodes_list.append(f"- TempID: '{n.get('tempId')}' | Title: '{n.get('title')}'")
+
+        new_edges_list = []
+        for e in failed_mutation.get("newEdges", []) or failed_mutation.get("new_edges", []):
+            src = e.get("sourceTempIdOrUuid") or e.get("source_temp_id_or_uuid")
+            tgt = e.get("targetTempIdOrUuid") or e.get("target_temp_id_or_uuid")
+            new_edges_list.append(f"  '{src}' -> '{tgt}'")
+
+        ctx["failedNewNodes"] = "\n".join(new_nodes_list) if new_nodes_list else "None"
+        ctx["failedNewEdges"] = "\n".join(new_edges_list) if new_edges_list else "None"
+
+    return ctx
+
+
 _CONTEXT_HOOKS: dict[str, Any] = {
     "skeleton": _prepare_skeleton_context,
     "enrich_task": _prepare_enrich_context,
     "wiki": _prepare_wiki_context,
     "mutate_graph": _prepare_mutate_context,
+    "smart_recovery": _prepare_recovery_context,
 }
 
 

@@ -124,14 +124,28 @@ class BaseProvider(ABC):
     async def smart_recovery(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("smart_recovery", prompt_data)
         result = await self._call_llm(system, user)
+
+        from app.providers.utils import validate_and_clean_mutation
+
+        patch_source = result.get("fixedPatch") or result
+
+        cleaned = validate_and_clean_mutation(
+            patch_source,
+            current_graph=prompt_data.get("currentGraph", {}),
+            ai_estimate=prompt_data.get("aiEstimate", True)
+        )
+
+        recovery_note = result.get("recoveryNote") or result.get(
+            "recovery_note") or "The plan has been adjusted by AI to avoid loops."
+
         return {
             "fixedPatch": {
-                "newNodes": result.get("newNodes", []),
-                "newEdges": result.get("newEdges", []),
-                "recalculatedTotalHours": result.get("recalculatedTotalHours"),
-                "reasoning": result.get("reasoning"),
+                "newNodes": cleaned.get("newNodes", []),
+                "newEdges": cleaned.get("newEdges", []),
+                "recalculatedTotalHours": cleaned.get("recalculatedTotalHours"),
+                "reasoning": cleaned.get("reasoning"),
             },
-            "recoveryNote": result.get("recoveryNote", "Patch corrected to avoid cycles"),
+            "recoveryNote": recovery_note,
             "modelUsed": self.config.model or self.default_model,
             "provider": self.config.provider,
         }
