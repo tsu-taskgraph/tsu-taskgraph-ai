@@ -3,6 +3,7 @@ from typing import Any
 
 import httpx
 
+from app.providers.prompts import build_prompt
 from app.schemas.common import ProviderConfig
 
 
@@ -51,15 +52,7 @@ class BaseProvider(ABC):
             }
 
     async def generate_skeleton(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
-        system = (
-            "You are a technical lead. Generate a task graph skeleton for a software project. "
-            "Return a JSON object with fields: nodes and edges."
-        )
-        user = (
-            f"Project: {prompt_data.get('projectName')}\n"
-            f"Tech stack: {', '.join(prompt_data.get('techStack', []))}\n"
-            f"Description: {prompt_data.get('description')}"
-        )
+        system, user = build_prompt("skeleton", prompt_data)
         result = await self._call_llm(system, user)
         return {
             "nodes": result.get("nodes", []),
@@ -74,12 +67,8 @@ class BaseProvider(ABC):
         }
 
     async def enrich_task(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
-        system = (
-            "You are a technical mentor. Enrich a task. Return JSON with checklist, pitfalls, links, "
-            "rawMarkdown, wikiDraft."
-        )
+        system, user = build_prompt("enrich_task", prompt_data)
         task = prompt_data.get("task", {})
-        user = f"Task: {task.get('taskTitle')}\nDescription: {task.get('taskDescription')}"
         result = await self._call_llm(system, user)
         return {
             "taskId": task.get("taskId"),
@@ -93,11 +82,7 @@ class BaseProvider(ABC):
         }
 
     async def mutate_graph(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
-        system = (
-            "You are a technical lead. Return a JSON patch with newNodes, newEdges, "
-            "recalculatedTotalHours, reasoning."
-        )
-        user = f"Request: {prompt_data.get('prompt')}\nCurrent graph: {prompt_data.get('currentGraph')}"
+        system, user = build_prompt("mutate_graph", prompt_data)
         result = await self._call_llm(system, user)
         return {
             "patch": {
@@ -111,14 +96,7 @@ class BaseProvider(ABC):
         }
 
     async def smart_recovery(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
-        system = (
-            "You are a technical lead. Fix a cyclic patch. Return JSON with newNodes, newEdges, "
-            "recalculatedTotalHours, reasoning."
-        )
-        user = (
-            f"Cycle nodes: {prompt_data.get('cycleNodes')}\n"
-            f"Failed patch: {prompt_data.get('failedMutation')}"
-        )
+        system, user = build_prompt("smart_recovery", prompt_data)
         result = await self._call_llm(system, user)
         return {
             "fixedPatch": {
@@ -133,15 +111,7 @@ class BaseProvider(ABC):
         }
 
     async def generate_diagrams(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
-        system = (
-            "You are a software architect. Generate Mermaid diagrams. Return JSON with "
-            "c4Code, sequenceCode, classCode."
-        )
-        user = (
-            f"Project: {prompt_data.get('projectName')}\n"
-            f"Nodes: {prompt_data.get('nodes')}\n"
-            f"Edges: {prompt_data.get('edges')}"
-        )
+        system, user = build_prompt("diagrams", prompt_data)
         result = await self._call_llm(system, user)
         return {
             "c4Code": result.get("c4Code"),
@@ -152,12 +122,8 @@ class BaseProvider(ABC):
         }
 
     async def generate_wiki(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
-        system = (
-            "You are a technical writer. Generate a Wiki page in Markdown. "
-            "Return JSON with title and content."
-        )
+        system, user = build_prompt("wiki", prompt_data)
         task = prompt_data.get("task", {})
-        user = f"Task: {task.get('taskTitle')}\nDescription: {task.get('taskDescription')}"
         result = await self._call_llm(system, user)
         return {
             "title": result.get("title", task.get("taskTitle", "Wiki page")),
