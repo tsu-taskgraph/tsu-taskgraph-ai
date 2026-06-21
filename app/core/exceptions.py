@@ -35,7 +35,7 @@ def build_error_response(
     }
 
 
-async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+async def http_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
     from fastapi import HTTPException
 
     if isinstance(exc, HTTPException):
@@ -48,7 +48,7 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
 
 
 async def validation_exception_handler(
-    request: Request, exc: RequestValidationError
+    _request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     body = build_error_response(
         error="ValidationError",
