@@ -102,12 +102,20 @@ class BaseProvider(ABC):
     async def mutate_graph(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
         system, user = build_prompt("mutate_graph", prompt_data)
         result = await self._call_llm(system, user)
+
+        from app.providers.utils import validate_and_clean_mutation
+        cleaned = validate_and_clean_mutation(
+            result,
+            current_graph=prompt_data.get("currentGraph", {}),
+            ai_estimate=prompt_data.get("aiEstimate", True)
+        )
+
         return {
             "patch": {
-                "newNodes": result.get("newNodes", []),
-                "newEdges": result.get("newEdges", []),
-                "recalculatedTotalHours": result.get("recalculatedTotalHours"),
-                "reasoning": result.get("reasoning"),
+                "newNodes": cleaned.get("newNodes", []),
+                "newEdges": cleaned.get("newEdges", []),
+                "recalculatedTotalHours": cleaned.get("recalculatedTotalHours"),
+                "reasoning": cleaned.get("reasoning"),
             },
             "modelUsed": self.config.model or self.default_model,
             "provider": self.config.provider,

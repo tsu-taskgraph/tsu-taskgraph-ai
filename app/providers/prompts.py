@@ -107,12 +107,59 @@ ENRICH_TASK = Prompt(
 
 MUTATE_GRAPH = Prompt(
     system=(
-        "You are a technical lead. Return a JSON patch with newNodes, newEdges, "
-        "recalculatedTotalHours, reasoning."
+        "You are an expert Technical Lead and Software Architect.\n"
+        "Your task is to safely MUTATE (patch) an existing project task graph (DAG) based on a user's new requirement "
+        "or request.\n"
+        "You will receive the current state of the project graph (a list of existing nodes and edges) and the user's "
+        "mutation request."
+        "You must determine what new tasks need to be added, what dependencies should be established, and how they "
+        "connect to the existing tasks in the project.\n\n"
+        "Rules for Mutating the Graph:\n"
+        "1. Identify the insertion points: Analyze which existing tasks must be completed BEFORE the new tasks can "
+        "start, and which existing tasks are BLOCKED by the new tasks. Connect them logically.\n"
+        "2. Do NOT touch or replicate the existing nodes or edges. Only output the NEW nodes and NEW edges required "
+        "for the patch.\n"
+        "3. Every new node must have a unique 'tempId' string (e.g., 'redis_setup', 'redis_api').\n"
+        "4. New edges must establish dependencies:\n"
+        "- To connect a new task as a dependent of an existing task, set sourceTempIdOrUuid to the existing task's "
+        "UUID (from the input) and targetTempIdOrUuid to the new task's tempId.\n"
+        "- To connect an existing task as dependent on a new task, set sourceTempIdOrUuid to the new task's tempId "
+        "and targetTempIdOrUuid to the existing task's UUID.\n"
+        "   - To link two new tasks together, use their tempIds.\n"
+        "5. The combined graph (current graph + patch) MUST remain a strict Directed Acyclic Graph (DAG) with no "
+        "cycles or self-loops.\n"
+        "6. Provide a realistic estimatedHours (positive float or integer) for each new task.\n"
+        "7. Categorize each new task under: BACKEND, FRONTEND, DEVOPS, TESTING, DOCUMENTATION, DESIGN, OTHER.\n"
+        "8. In 'reasoning', write a 1-2 sentence engineering justification for your graph placement.\n\n"
+        "Response Format:\n"
+        "You must return ONLY a valid, raw JSON object with the following fields and no extra text outside the JSON:\n"
+        "{\n"
+        "  \"newNodes\": [\n"
+        "    {\n"
+        "      \"tempId\": \"string (unique identifier like 'redis_setup')\",\n"
+        "      \"title\": \"string (actionable task title)\",\n"
+        "      \"description\": \"string (brief description of requirements)\",\n"
+        "\"category\": \"string (MUST be one of: BACKEND, FRONTEND, DEVOPS, TESTING, DOCUMENTATION, DESIGN, OTHER)\",\n"
+        "      \"estimatedHours\": number (positive float or integer)\n"
+        "    }\n"
+        "  ],\n"
+        "  \"newEdges\": [\n"
+        "    {\n"
+        "      \"sourceTempIdOrUuid\": \"string (UUID of existing task or tempId of new task)\",\n"
+        "      \"targetTempIdOrUuid\": \"string (UUID of existing task or tempId of new task)\"\n"
+        "    }\n"
+        "  ],\n"
+        "\"recalculatedTotalHours\": number or null (optional, estimated total project hours after adding this "
+        "patch),\n"
+        "  \"reasoning\": \"string (architectural reasoning)\"\n"
+        "}"
     ),
     user_template=(
-        "Request: {prompt}\n"
-        "Current graph: {currentGraph}"
+        "Project Name: {projectName}\n"
+        "Tech Stack: {techStack}\n"
+        "User Request (Mutation Prompt): {prompt}\n\n"
+        "Current Graph Nodes:\n{currentGraphNodes}\n\n"
+        "Current Graph Edges (Dependencies):\n{currentGraphEdges}"
     ),
 )
 
@@ -220,10 +267,37 @@ def _prepare_skeleton_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
     return ctx
 
 
+def _prepare_mutate_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
+    ctx = dict(prompt_data)
+
+    tech_stack = ctx.get("techStack", [])
+    if isinstance(tech_stack, list):
+        ctx["techStack"] = ", ".join(tech_stack)
+
+    current_graph = ctx.get("currentGraph", {})
+    if isinstance(current_graph, dict):
+        nodes_list = []
+        for n in current_graph.get("nodes", []):
+            nid = n.get("id") or n.get("tempId") or n.get("temp_id")
+            nodes_list.append(f"- ID/UUID: '{nid}' | Title: '{n.get('title')}' | Status: '{n.get('status')}'")
+
+        edges_list = []
+        for e in current_graph.get("edges", []):
+            src = e.get("sourceTaskId") or e.get("source_task_id") or e.get("sourceTempId")
+            tgt = e.get("targetTaskId") or e.get("target_task_id") or e.get("targetTempId")
+            edges_list.append(f"  '{src}' -> '{tgt}'")
+
+        ctx["currentGraphNodes"] = "\n".join(nodes_list) if nodes_list else "None (empty project)"
+        ctx["currentGraphEdges"] = "\n".join(edges_list) if edges_list else "None (no dependencies)"
+
+    return ctx
+
+
 _CONTEXT_HOOKS: dict[str, Any] = {
     "skeleton": _prepare_skeleton_context,
     "enrich_task": _prepare_enrich_context,
     "wiki": _prepare_wiki_context,
+    "mutate_graph": _prepare_mutate_context,
 }
 
 

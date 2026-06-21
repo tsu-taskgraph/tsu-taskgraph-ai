@@ -20,7 +20,6 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         servers=[
             {"url": "http://localhost:8000", "description": "Local development"},
-            {"url": "http://ai-service:8000", "description": "Docker internal"},
         ],
     )
 
