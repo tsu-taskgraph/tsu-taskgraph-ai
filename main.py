@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.router import router as api_router
@@ -10,7 +12,7 @@ from app.core.exceptions import build_error_response, validation_exception_handl
 def create_app() -> FastAPI:
     settings = get_settings()
 
-    app = FastAPI(
+    fastapi_app = FastAPI(
         title="TaskGraph AI Service Bridge",
         version=settings.app_version,
         docs_url="/docs",
@@ -22,22 +24,30 @@ def create_app() -> FastAPI:
         ],
     )
 
-    from fastapi.responses import JSONResponse
+    origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+    # noinspection PyTypeChecker
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-    @app.exception_handler(StarletteHTTPException)
-    async def http_exc_handler(request, exc):  # noqa: ANN001
+    @fastapi_app.exception_handler(StarletteHTTPException)
+    async def http_exc_handler(_request, exc):  # noqa: ANN001
         body = build_error_response(
             error="HTTPException",
             message=exc.detail,
         )
         return JSONResponse(content=body, status_code=exc.status_code)
 
-    @app.exception_handler(RequestValidationError)
-    async def validation_exc_handler(request, exc):  # noqa: ANN001
-        return await validation_exception_handler(request, exc)
+    @fastapi_app.exception_handler(RequestValidationError)
+    async def validation_exc_handler(_request, exc):
+        return await validation_exception_handler(_request, exc)
 
-    app.include_router(api_router)
-    return app
+    fastapi_app.include_router(api_router)
+    return fastapi_app
 
 
 app = create_app()
@@ -46,8 +56,3 @@ app = create_app()
 @app.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
     return {"message": "TaskGraph AI Service Bridge"}
-
-
-@app.get("/hello/{name}")
-async def say_hello(name: str) -> dict[str, str]:
-    return {"message": f"Hello {name}"}

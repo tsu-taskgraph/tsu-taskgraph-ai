@@ -11,12 +11,12 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "TaskGraph AI Service Bridge"
-    app_version: str = "1.2.0"
+    app_version: str = "1.0.0"
     debug: bool = False
 
     internal_secret: str
 
-    # cors_origins: str = "*"
+    cors_origins: str = "*"
 
 
 @lru_cache
