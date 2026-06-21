@@ -8,6 +8,26 @@ from app.schemas.common import ProviderConfig
 
 class StubProvider(BaseProvider):
 
+    @property
+    def default_model(self) -> str:
+        return "stub"
+
+    @property
+    def check_url(self) -> str:
+        return "/stub-health"
+
+    def __init__(self, config: ProviderConfig):
+        super().__init__(config)
+        self.client = None  # type: ignore[assignment]
+
+    async def _call_llm(
+        self,
+        system: str,
+        user: str,
+        json_mode: bool = True,
+    ) -> dict[str, Any]:
+        raise NotImplementedError("StubProvider does not call LLM")
+
     async def check(self) -> dict[str, Any]:
         return {"available": True, "latency_ms": 1, "error": None}
 

@@ -1,7 +1,8 @@
 import json
 import re
-from typing import Any
+from typing import Any, NoReturn
 
+import httpx
 from fastapi import HTTPException, status
 
 
@@ -34,7 +35,7 @@ def extract_json(text: str) -> dict[str, Any]:
         raise ValueError(f"Invalid JSON: {e}") from e
 
 
-def handle_provider_error(message: str, status_code: int | None = None) -> None:
+def handle_provider_error(message: str, status_code: int | None = None) -> NoReturn:
     raise HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail={
@@ -43,6 +44,21 @@ def handle_provider_error(message: str, status_code: int | None = None) -> None:
             "providerHttpStatus": status_code,
         },
     )
+
+
+async def safe_post(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict[str, Any],
+) -> httpx.Response:
+    try:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        return response
+    except httpx.HTTPStatusError as e:
+        handle_provider_error(str(e), e.response.status_code)
+    except httpx.RequestError as e:
+        handle_provider_error(str(e))
 
 
 def map_common_params(settings: dict[str, Any] | None) -> dict[str, Any]:
