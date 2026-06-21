@@ -31,7 +31,7 @@ class AnthropicProvider(BaseProvider):
 
     @property
     def default_model(self) -> str:
-        return "claude-sonnet-4-6"
+        return "claude-sonnet-4.6"
 
     def __init__(self, config: ProviderConfig):
         super().__init__(config)

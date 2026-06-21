@@ -14,7 +14,7 @@ from app.schemas.common import ProviderConfig
 
 class OpenAICompatibleProvider(BaseProvider):
     BASE_URL = "https://api.openai.com/v1"
-    DEFAULT_MODEL = "gpt-4o"
+    DEFAULT_MODEL = "gpt-5.3-instant"
 
     @property
     def default_model(self) -> str:

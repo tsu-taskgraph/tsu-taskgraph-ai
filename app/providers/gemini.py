@@ -34,7 +34,7 @@ class GeminiProvider(BaseProvider):
 
     @property
     def default_model(self) -> str:
-        return "gemini-2.5-pro"
+        return "gemini-3.5-flash"
 
     @property
     def check_url(self) -> str:

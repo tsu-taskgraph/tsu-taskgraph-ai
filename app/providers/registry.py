@@ -187,7 +187,10 @@ PROVIDERS_DIRECTORY = {
             "properties": {
                 "temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.7},
                 "maxTokens": {"type": "integer", "minimum": 1, "default": 4096},
-                "reasoningEffort": {"type": "string", "enum": ["low", "medium", "high"], "description": "Глубина рассуждений для моделей o1/o3/o4"}
+                "reasoningEffort": {"type": "string", "enum": ["low", "medium", "high"], "description": "Глубина "
+                                                                                                        "рассуждений "
+                                                                                                        "для моделей "
+                                                                                                        "o1/o3/o4"}
             }
         }
     },
@@ -207,7 +210,8 @@ PROVIDERS_DIRECTORY = {
             "properties": {
                 "temperature": {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0},
                 "maxTokens": {"type": "integer", "minimum": 1, "default": 4096},
-                "extendedThinking": {"type": "boolean", "default": False, "description": "Включить extended thinking для Claude 3.7+"},
+                "extendedThinking": {"type": "boolean", "default": False, "description": "Включить extended thinking "
+                                                                                         "для Claude 3.7+"},
                 "thinkingTokenBudget": {"type": "integer", "minimum": 1, "description": "Бюджет токенов на рассуждения"}
             }
         }
@@ -228,7 +232,8 @@ PROVIDERS_DIRECTORY = {
             "properties": {
                 "temperature": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.7},
                 "maxTokens": {"type": "integer", "minimum": 1, "default": 4096},
-                "groqReasoningFormat": {"type": "string", "enum": ["parsed", "raw", "hidden"], "description": "Формат вывода рассуждений модели"}
+                "groqReasoningFormat": {"type": "string", "enum": ["parsed", "raw", "hidden"],
+                                        "description": "Формат вывода рассуждений модели"}
             }
         }
     },
