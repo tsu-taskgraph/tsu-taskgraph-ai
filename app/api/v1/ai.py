@@ -25,11 +25,18 @@ async def generate_skeleton(body: GenerateSkeletonRequest) -> GenerateSkeletonRe
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def enrich_task(body: EnrichTaskRequest) -> EnrichTaskJobResponse:
-    # TODO: интегрировать Celery/RQ для фоновой обработки.
     import uuid
+    from app.core.celery_app import enrich_task_background
+
+    job_id = str(uuid.uuid4())
+
+    enrich_task_background.delay(
+        body.model_dump(by_alias=True),
+        job_id
+    )
 
     return EnrichTaskJobResponse(
-        job_id=str(uuid.uuid4()),
+        job_id=job_id,
         task_id=body.task.task_id,
         status="QUEUED",
         estimated_seconds=8,
