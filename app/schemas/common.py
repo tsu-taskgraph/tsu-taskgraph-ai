@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field
 
-# Перечисление провайдеров из ai-bridge.yaml
-AiProviderType = str  # enum: gemini, openai, anthropic, groq, mistral, ollama
+AiProviderType = str
 
 PROVIDER_CHOICES = ["gemini", "openai", "anthropic", "groq", "mistral", "ollama"]
 
@@ -35,7 +34,7 @@ class ProviderConfig(BaseModel):
     provider: str = Field(..., pattern=r"^(gemini|openai|anthropic|groq|mistral|ollama)$")
     api_key: str | None = Field(None, alias="apiKey")
     model: str | None = None
-    ollama_base_url: str | None = Field(None, alias="ollamaBaseUrl")
+    custom_base_url: str | None = Field(None, alias="customBaseUrl")
     settings: ProviderSettings | None = None
 
     model_config = {"populate_by_name": True}

@@ -22,8 +22,9 @@ class OpenAICompatibleProvider(BaseProvider):
 
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
+        base_url = config.custom_base_url or self.BASE_URL
         self.client = httpx.AsyncClient(
-            base_url=self.BASE_URL,
+            base_url=base_url,
             headers={
                 "Authorization": f"Bearer {config.api_key}",
                 "Content-Type": "application/json",

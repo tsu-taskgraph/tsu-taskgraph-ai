@@ -38,7 +38,7 @@ class OllamaProvider(BaseProvider):
 
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
-        base_url = config.ollama_base_url or self.DEFAULT_BASE_URL
+        base_url = config.custom_base_url or self.DEFAULT_BASE_URL
         self.client = httpx.AsyncClient(
             base_url=base_url,
             timeout=120.0,
