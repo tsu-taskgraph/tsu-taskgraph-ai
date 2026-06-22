@@ -13,7 +13,6 @@ def create_app() -> FastAPI:
     fastapi_app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        root_path=settings.root_path,
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
         openapi_url="/openapi.json" if settings.debug else None,
