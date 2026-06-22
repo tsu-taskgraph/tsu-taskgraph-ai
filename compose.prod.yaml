@@ -18,7 +18,8 @@ services:
       INTERNAL_SECRET: ${INTERNAL_SECRET}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:-*}
-      DEBUG: ${DEBUG}
+      ROOT_PATH: /api/v1/ai
+      DEBUG: ${DEBUG:-false}
     env_file:
       - .env
 
