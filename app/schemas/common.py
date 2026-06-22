@@ -1,16 +1,8 @@
-from typing import Any
 from pydantic import BaseModel, Field
 
 AiProviderType = str
 
 PROVIDER_CHOICES = ["gemini", "openai", "anthropic", "groq", "mistral", "ollama"]
-
-
-class ProviderDirectoryEntry(BaseModel):
-    default_model: str = Field(..., alias="defaultModel")
-    supported_models: list[str] = Field(..., alias="supportedModels")
-
-    model_config = {"populate_by_name": True}
 
 
 class ProviderConfig(BaseModel):
