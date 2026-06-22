@@ -1,7 +1,6 @@
 from app.schemas.common import (
     AiProviderType,
     ProviderConfig,
-    ProviderSettings,
     TechStack,
 )
 from app.schemas.diagrams import (
@@ -48,7 +47,6 @@ from app.schemas.wiki import (
 __all__ = [
     "AiProviderType",
     "ProviderConfig",
-    "ProviderSettings",
     "TechStack",
     "DiagramRequest",
     "DiagramResponse",

@@ -4,16 +4,16 @@ import httpx
 
 from app.providers.base import BaseProvider
 from app.providers.utils import (
-    build_messages,
     extract_json,
     safe_post,
 )
 from app.schemas.common import ProviderConfig
 
 
-class OpenAICompatibleProvider(BaseProvider):
-    BASE_URL = "https://api.openai.com/v1"
-    DEFAULT_MODEL = "gpt-5.3-instant"
+class AnthropicCompatibleProvider(BaseProvider):
+    BASE_URL = "https://api.anthropic.com/v1"
+    API_VERSION = "2023-06-01"
+    DEFAULT_MODEL = "claude-sonnet-4.6"
 
     @property
     def default_model(self) -> str:
@@ -25,7 +25,8 @@ class OpenAICompatibleProvider(BaseProvider):
         self.client = httpx.AsyncClient(
             base_url=base_url,
             headers={
-                "Authorization": f"Bearer {config.api_key}",
+                "x-api-key": config.api_key or "",
+                "anthropic-version": self.API_VERSION,
                 "Content-Type": "application/json",
             },
             timeout=60.0,
@@ -38,17 +39,20 @@ class OpenAICompatibleProvider(BaseProvider):
         json_mode: bool = True,
     ) -> dict[str, Any]:
         model = self.config.model or self.default_model
+        if json_mode:
+            system = f"{system}\n\nAlways respond with a valid JSON object."
+
         payload: dict[str, Any] = {
             "model": model,
-            "messages": build_messages(system, user),
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
         }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
 
-        response = await safe_post(self.client, "/chat/completions", payload)
+        response = await safe_post(self.client, "/messages", payload)
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        return extract_json(content)
+        text = data["content"][0]["text"]
+        return extract_json(text)
 
     async def list_models(self) -> list[str]:
         try:
@@ -58,5 +62,5 @@ class OpenAICompatibleProvider(BaseProvider):
             models = [m["id"] for m in data.get("data", [])]
             return sorted(models)
         except Exception as e:
-            print(f"Failed to fetch models from OpenAICompatible: {e}")
+            print(f"Failed to fetch models from AnthropicCompatible: {e}")
             return []
