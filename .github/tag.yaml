@@ -1,0 +1,120 @@
+name: Project Release Tag
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔍 Find merged PR for current commit
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const sha = context.sha;
+
+            const { data: pulls } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              sort: 'updated',
+              direction: 'desc',
+              per_page: 50
+            });
+
+            const pr = pulls.find(p => p.merge_commit_sha === sha);
+
+            if (!pr) {
+              core.setFailed(`No merged pull request found for commit ${sha}.`);
+              return;
+            }
+
+            if (!pr.merged_at) {
+              core.setFailed('Found PR is not merged.');
+              return;
+            }
+
+            const srcBranch = pr.head.ref;
+            core.info(`Source branch: ${srcBranch}`);
+
+            core.setOutput('source_branch', srcBranch);
+
+      - name: 🔖 Create tag from source branch name
+        id: create_tag
+        run: |
+          SRC_BRANCH="${{ steps.pr-info.outputs.source_branch }}"
+          echo "Source branch: $SRC_BRANCH"
+
+          if [[ "$SRC_BRANCH" == release/* ]]; then
+            VERSION="${SRC_BRANCH#release/}"
+          elif [[ "$SRC_BRANCH" == hotfix/* ]]; then
+            if [[ "$SRC_BRANCH" =~ ^hotfix/v[0-9] ]]; then
+              VERSION="${SRC_BRANCH#hotfix/}"
+            else
+              echo "🔍 Hotfix without version in name. Fetching last tag..."
+              git fetch --tags
+              LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+              
+              if [ -z "$LAST_TAG" ]; then
+                echo "⚠️ No tags found. Falling back to v1.0.0"
+                VERSION="v1.0.0"
+              else
+                echo "Latest tag found: $LAST_TAG"
+                if [[ "$LAST_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+                  MAJOR="${BASH_REMATCH[1]}"
+                  MINOR="${BASH_REMATCH[2]}"
+                  PATCH="${BASH_REMATCH[3]}"
+                  NEW_PATCH=$((PATCH + 1))
+                  VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+                else
+                  echo "⚠️ Last tag $LAST_TAG doesn't match vX.Y.Z format. Appending -hotfix"
+                  VERSION="${LAST_TAG}-hotfix"
+                fi
+              fi
+            fi
+          else
+            VERSION=""
+          fi
+
+          TAG_NAME="${VERSION}"
+          echo "Extracted/Calculated Version: $VERSION"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag $TAG_NAME already exists, skipping creation."
+            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+          git push origin "$TAG_NAME"
+
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: 📦 Create GitHub Release
+        if: steps.create_tag.outputs.tag_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.create_tag.outputs.tag_name }}
+          name: ${{ steps.create_tag.outputs.tag_name }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
