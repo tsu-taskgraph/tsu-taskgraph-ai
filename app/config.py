@@ -18,8 +18,6 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"
 
-    root_path: str = ""
-
     redis_url: str = "redis://localhost:6379/0"
 
 
