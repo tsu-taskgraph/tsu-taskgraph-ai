@@ -36,6 +36,26 @@ def extract_json(text: str) -> dict[str, Any]:
 
 
 def handle_provider_error(message: str, status_code: int | None = None) -> NoReturn:
+    if status_code == 429:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "RateLimitError",
+                "message": "AI provider rate limit exceeded. Please retry later.",
+                "providerHttpStatus": status_code,
+            },
+        )
+
+    if status_code in (401, 403):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "ProviderAuthError",
+                "message": "AI provider rejected the API key.",
+                "providerHttpStatus": status_code,
+            },
+        )
+
     raise HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail={
@@ -57,6 +77,15 @@ async def safe_post(
         return response
     except httpx.HTTPStatusError as e:
         handle_provider_error(str(e), e.response.status_code)
+    except httpx.TimeoutException as e:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={
+                "error": "ProviderTimeout",
+                "message": f"AI provider request timed out: {e}",
+                "providerHttpStatus": None,
+            },
+        )
     except httpx.RequestError as e:
         handle_provider_error(str(e))
 
