@@ -223,24 +223,149 @@ SMART_RECOVERY = Prompt(
 
 DIAGRAMS = Prompt(
     system=(
-        "You are a software architect. Generate Mermaid diagrams. Return JSON with "
-        "c4Code, sequenceCode, classCode."
+        "You are an expert Software Architect specializing in system visualization and UML/C4 modeling.\n"
+        "Your task is to generate Mermaid.js diagram code based on a project's enriched task graph.\n\n"
+        "You will receive:\n"
+        "- A list of project tasks (nodes) with their titles, categories, statuses, layers (topological depth), "
+        "checklists (representing operations/methods), and links (representing external dependencies/services).\n"
+        "- A list of dependency edges between tasks.\n"
+        "- The project name and technology stack.\n"
+        "- A list of requested diagram types to generate.\n\n"
+        "Diagram Generation Rules:\n\n"
+        "1. **C4 Container Diagram (`c4Code`):**\n"
+        "   - Use `C4Context` or `C4Container` Mermaid syntax.\n"
+        "   - Model the system architecture: group tasks by category (BACKEND, FRONTEND, DEVOPS, etc.) into "
+        "logical containers/boundaries.\n"
+        "   - Use `links` from task enrichment to identify external systems and services (databases, APIs, "
+        "message brokers, etc.).\n"
+        "   - Use the `techStack` to label containers with specific technologies.\n"
+        "   - Show relationships between containers using `Rel()`.\n"
+        "   - Example syntax:\n"
+        "     ```\n"
+        "     C4Context\n"
+        "       title System Context - ProjectName\n"
+        "       Person(user, \"User\", \"End user of the system\")\n"
+        "       System(frontend, \"Frontend SPA\", \"React + TypeScript\")\n"
+        "       System(backend, \"Core API\", \"Spring Boot\")\n"
+        "       SystemDb(db, \"PostgreSQL\", \"Primary data store\")\n"
+        "       Rel(user, frontend, \"Uses\")\n"
+        "       Rel(frontend, backend, \"REST API calls\")\n"
+        "       Rel(backend, db, \"Reads/Writes\")\n"
+        "     ```\n\n"
+        "2. **Sequence Diagram (`sequenceCode`):**\n"
+        "   - Use standard Mermaid `sequenceDiagram` syntax.\n"
+        "   - Model the end-to-end lifecycle of the project's core workflow, ordered by task `layer` "
+        "(topological depth).\n"
+        "   - Show how components interact chronologically: which task triggers what, data flows between "
+        "layers.\n"
+        "   - Use task titles as participant names (shorten if too long).\n"
+        "   - Group interactions by phases/layers using `rect` blocks or `Note` annotations.\n"
+        "   - Example syntax:\n"
+        "     ```\n"
+        "     sequenceDiagram\n"
+        "       participant Client\n"
+        "       participant API\n"
+        "       participant DB\n"
+        "       Client->>API: POST /auth/login\n"
+        "       API->>DB: SELECT user\n"
+        "       DB-->>API: user record\n"
+        "       API-->>Client: JWT token\n"
+        "     ```\n\n"
+        "3. **Class Diagram (`classCode`):**\n"
+        "   - Use standard Mermaid `classDiagram` syntax.\n"
+        "   - Model each task as a class. The class name should be derived from the task title "
+        "(use PascalCase, e.g. 'Setup PostgreSQL' → `SetupPostgreSQL`).\n"
+        "   - Use `checklist` items from enrichment as class methods/operations.\n"
+        "   - Use `category` as a stereotype annotation (e.g., `<<BACKEND>>`).\n"
+        "   - Show dependencies between classes based on the graph edges.\n"
+        "   - Example syntax:\n"
+        "     ```\n"
+        "     classDiagram\n"
+        "       class SetupPostgreSQL {\n"
+        "         <<BACKEND>>\n"
+        "         +installDriver()\n"
+        "         +configureDatasource()\n"
+        "         +runMigrations()\n"
+        "       }\n"
+        "       class BuildAuthAPI {\n"
+        "         <<BACKEND>>\n"
+        "         +implementJWT()\n"
+        "         +addSecurityFilter()\n"
+        "       }\n"
+        "       SetupPostgreSQL <|-- BuildAuthAPI\n"
+        "     ```\n\n"
+        "Critical Mermaid Syntax Rules (MUST FOLLOW):\n"
+        "- Do NOT wrap Mermaid code in markdown fences (no ```mermaid ... ```).\n"
+        "- Return ONLY the raw Mermaid code for each diagram type.\n"
+        "- Use ONLY valid Mermaid.js syntax — no custom or invented directives.\n"
+        "- Avoid special characters in labels that break Mermaid parsing: use quotes for labels with spaces "
+        "or special chars.\n"
+        "- If a requested diagram type is not in the `requestedDiagrams` list, set its field to null.\n\n"
+        "Response Format:\n"
+        "Return ONLY a valid, raw JSON object with no extra text:\n"
+        "{\n"
+        "  \"c4Code\": \"string or null (raw Mermaid C4 code)\",\n"
+        "  \"sequenceCode\": \"string or null (raw Mermaid sequence diagram code)\",\n"
+        "  \"classCode\": \"string or null (raw Mermaid class diagram code)\"\n"
+        "}"
     ),
     user_template=(
-        "Project: {projectName}\n"
-        "Nodes: {nodes}\n"
-        "Edges: {edges}"
+        "Project Name: {projectName}\n"
+        "Tech Stack: {techStack}\n"
+        "Requested Diagrams: {requestedDiagrams}\n\n"
+        "Graph Nodes (enriched tasks):\n{formattedNodes}\n\n"
+        "Graph Edges (dependencies):\n{formattedEdges}"
     ),
 )
 
 WIKI = Prompt(
     system=(
-        "You are a technical writer. Generate a Wiki page in Markdown. "
-        "Return JSON with title and content."
+        "You are an expert Technical Writer and Senior Software Architect.\n"
+        "Your task is to generate a comprehensive, production-ready Wiki documentation page in Markdown for a "
+        "specific project task.\n\n"
+        "Guidelines:\n"
+        "1. **Title:** Propose a clear, descriptive page title that reflects the task's purpose.\n"
+        "2. **Content Structure:** Generate a well-structured Markdown document that includes:\n"
+        "   - **Overview:** A concise summary of what this task accomplishes and why it matters in the project "
+        "context.\n"
+        "   - **Prerequisites:** Based on `predecessorTitles`, list what must be completed before this task. "
+        "If there are no predecessors, note that this is a starting task.\n"
+        "   - **Implementation Guide:** A detailed, step-by-step technical guide. Expand each `checklist` item "
+        "into a thorough explanation with code examples, configuration snippets, or architectural patterns "
+        "relevant to the `techStack`.\n"
+        "   - **Potential Pitfalls & Warnings:** Expand each item from `pitfalls` into a detailed explanation "
+        "with mitigation strategies.\n"
+        "   - **Useful Resources:** Format `links` into a clean reference section with descriptions.\n"
+        "   - **Next Steps:** Based on `successorTitles`, briefly describe what tasks follow and how this "
+        "task's output feeds into them.\n"
+        "3. **Tech Stack Awareness:** All code examples, configuration snippets, and architectural advice MUST "
+        "be tailored to the project's specific `techStack`.\n"
+        "4. **Regeneration Mode:** If `existingContent` is provided, treat it as a draft to IMPROVE upon — "
+        "preserve the user's structure and additions where sensible, but enhance clarity, add missing sections, "
+        "fix technical inaccuracies, and enrich with deeper examples. Do NOT discard user-written content "
+        "without good reason.\n"
+        "5. **Formatting:** Use proper Markdown: headers (## / ###), code blocks with language tags, bullet "
+        "lists, tables where appropriate, and blockquotes for important notes.\n\n"
+        "Response Format:\n"
+        "Return ONLY a valid, raw JSON object with no extra text:\n"
+        "{\n"
+        "  \"title\": \"string (proposed Wiki page title)\",\n"
+        "  \"content\": \"string (full Markdown content of the Wiki page)\"\n"
+        "}"
     ),
     user_template=(
-        "Task: {taskTitle}\n"
-        "Description: {taskDescription}"
+        "Project Name: {projectName}\n"
+        "Tech Stack: {techStack}\n"
+        "Task Title: {taskTitle}\n"
+        "Task Category: {category}\n"
+        "Task Description: {taskDescription}\n"
+        "Estimated Hours: {estimatedHours}\n"
+        "Predecessor Tasks: {predecessorTitles}\n"
+        "Successor Tasks: {successorTitles}\n"
+        "Checklist: {checklist}\n"
+        "Pitfalls: {pitfalls}\n"
+        "Links: {links}\n"
+        "Existing Content (for regeneration): {existingContent}"
     ),
 )
 
@@ -301,8 +426,104 @@ def _prepare_enrich_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
 def _prepare_wiki_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
     task = prompt_data.get("task", {})
     ctx = dict(prompt_data)
+
+    tech_stack = ctx.get("techStack", [])
+    if isinstance(tech_stack, list):
+        ctx["techStack"] = ", ".join(tech_stack)
+
     ctx["taskTitle"] = task.get("taskTitle", "")
-    ctx["taskDescription"] = task.get("taskDescription", "")
+    ctx["taskDescription"] = task.get("taskDescription", "") or "No description provided."
+    ctx["category"] = task.get("category") or "OTHER"
+    ctx["estimatedHours"] = task.get("estimatedHours") or "Not estimated"
+
+    predecessors = task.get("predecessorTitles", [])
+    if isinstance(predecessors, list):
+        ctx["predecessorTitles"] = ", ".join(predecessors) if predecessors else "None (this is a starting task)"
+
+    successors = task.get("successorTitles", [])
+    if isinstance(successors, list):
+        ctx["successorTitles"] = ", ".join(successors) if successors else "None (this is a final task)"
+
+    checklist = task.get("checklist", [])
+    if isinstance(checklist, list):
+        ctx["checklist"] = "\n".join(f"- {item}" for item in checklist) if checklist else "None"
+
+    pitfalls = task.get("pitfalls", [])
+    if isinstance(pitfalls, list):
+        ctx["pitfalls"] = "\n".join(f"- {item}" for item in pitfalls) if pitfalls else "None"
+
+    links = task.get("links", [])
+    if isinstance(links, list):
+        formatted_links = []
+        for link in links:
+            if isinstance(link, dict):
+                formatted_links.append(f"- [{link.get('title', 'Link')}]({link.get('url', '')})")
+        ctx["links"] = "\n".join(formatted_links) if formatted_links else "None"
+
+    existing = ctx.get("existingContent")
+    ctx["existingContent"] = existing if existing else "None (generate from scratch)"
+
+    return ctx
+
+
+def _prepare_diagrams_context(prompt_data: dict[str, Any]) -> dict[str, Any]:
+    ctx = dict(prompt_data)
+
+    tech_stack = ctx.get("techStack", [])
+    if isinstance(tech_stack, list):
+        ctx["techStack"] = ", ".join(tech_stack)
+
+    requested = ctx.get("requestedDiagrams", ["c4", "sequence", "class"])
+    if isinstance(requested, list):
+        ctx["requestedDiagrams"] = ", ".join(requested)
+
+    nodes = ctx.get("nodes", [])
+    if isinstance(nodes, list):
+        formatted = []
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            nid = n.get("id", "")
+            title = n.get("title", "")
+            category = n.get("category") or "OTHER"
+            status = n.get("status", "LOCKED")
+            layer = n.get("layer", 0)
+            desc = n.get("description") or ""
+
+            checklist = n.get("checklist", [])
+            checklist_str = ", ".join(checklist) if isinstance(checklist, list) and checklist else "None"
+
+            links = n.get("links", [])
+            links_str = ""
+            if isinstance(links, list) and links:
+                link_parts = []
+                for lnk in links:
+                    if isinstance(lnk, dict):
+                        link_parts.append(f"{lnk.get('title', 'Link')} ({lnk.get('url', '')})")
+                links_str = ", ".join(link_parts)
+            if not links_str:
+                links_str = "None"
+
+            formatted.append(
+                f"- ID: '{nid}' | Title: '{title}' | Category: {category} | "
+                f"Status: {status} | Layer: {layer} | "
+                f"Description: '{desc}' | "
+                f"Checklist: [{checklist_str}] | "
+                f"Links: [{links_str}]"
+            )
+        ctx["formattedNodes"] = "\n".join(formatted) if formatted else "None"
+
+    edges = ctx.get("edges", [])
+    if isinstance(edges, list):
+        formatted_edges = []
+        for e in edges:
+            if not isinstance(e, dict):
+                continue
+            src = e.get("sourceTaskId") or e.get("source_task_id", "")
+            tgt = e.get("targetTaskId") or e.get("target_task_id", "")
+            formatted_edges.append(f"  '{src}' -> '{tgt}'")
+        ctx["formattedEdges"] = "\n".join(formatted_edges) if formatted_edges else "None (no dependencies)"
+
     return ctx
 
 
@@ -391,6 +612,7 @@ _CONTEXT_HOOKS: dict[str, Any] = {
     "skeleton": _prepare_skeleton_context,
     "enrich_task": _prepare_enrich_context,
     "wiki": _prepare_wiki_context,
+    "diagrams": _prepare_diagrams_context,
     "mutate_graph": _prepare_mutate_context,
     "smart_recovery": _prepare_recovery_context,
 }

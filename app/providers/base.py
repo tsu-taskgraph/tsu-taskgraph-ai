@@ -173,18 +173,34 @@ class BaseProvider(ABC):
         }
 
     async def generate_diagrams(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
+        requested = prompt_data.get("requestedDiagrams", ["c4", "sequence", "class"])
+
         system, user = build_prompt("diagrams", prompt_data)
         result = await self._call_llm_safe(system, user)
+
         return {
-            "c4Code": result.get("c4Code"),
-            "sequenceCode": result.get("sequenceCode"),
-            "classCode": result.get("classCode"),
+            "c4Code": result.get("c4Code") if "c4" in requested else None,
+            "sequenceCode": result.get("sequenceCode") if "sequence" in requested else None,
+            "classCode": result.get("classCode") if "class" in requested else None,
             "modelUsed": self.config.model or self.default_model,
             "provider": self.config.provider,
         }
 
     async def generate_wiki(self, prompt_data: dict[str, Any]) -> dict[str, Any]:
-        system, user = build_prompt("wiki", prompt_data)
+        existing_content = prompt_data.get("existingContent")
+        if existing_content:
+            from app.providers.prompts import WIKI
+            system = (
+                f"{WIKI.system}\n\n"
+                "IMPORTANT: The user has provided existing content for this Wiki page. "
+                "You are in REGENERATION mode. Improve and enrich the existing content — "
+                "do not discard it. Preserve the user's structure and additions, but enhance "
+                "clarity, add missing sections, fix inaccuracies, and add deeper technical examples."
+            )
+            _, user = build_prompt("wiki", prompt_data)
+        else:
+            system, user = build_prompt("wiki", prompt_data)
+
         task = prompt_data.get("task", {})
         result = await self._call_llm_safe(system, user)
         return {
