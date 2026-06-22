@@ -11,7 +11,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     fastapi_app = FastAPI(
-        title="TaskGraph AI Service Bridge",
+        title=settings.app_name,
         version=settings.app_version,
         docs_url="/docs",
         redoc_url="/redoc",
@@ -88,4 +88,5 @@ app = create_app()
 
 @app.get("/", include_in_schema=False)
 async def root() -> dict[str, str]:
-    return {"message": "TaskGraph AI Service Bridge"}
+    settings = get_settings()
+    return {"message": settings.app_name}
