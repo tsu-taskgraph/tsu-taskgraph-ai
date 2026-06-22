@@ -1,0 +1,39 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: taskgraph-redis
+    restart: unless-stopped
+    volumes:
+      - taskgraph_redis_data:/data
+
+  ai-service:
+    image: ${DOCKER_USERNAME}/tsu-taskgraph-ai:latest
+    container_name: taskgraph-ai-service
+    restart: unless-stopped
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    environment:
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:-*}
+      DEBUG: "false"
+    env_file:
+      - .env
+
+  celery-worker:
+    image: ${DOCKER_USERNAME}/tsu-taskgraph-ai:latest
+    container_name: taskgraph-celery-worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+    command: celery -A app.core.celery_app:celery_app worker --loglevel=info --concurrency=4
+    environment:
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+      REDIS_URL: redis://redis:6379/0
+    env_file:
+      - .env
+
+volumes:
+  taskgraph_redis_data:

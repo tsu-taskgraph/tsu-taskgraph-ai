@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: taskgraph-redis
+    ports:
+      - "6379:6379"
+    restart: always
+
+  ai-service:
+    build: .
+    container_name: taskgraph-ai-service
+    ports:
+      - "8000:8000"
+    environment:
+      - INTERNAL_SECRET=test_secret
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: always
+
+  celery-worker:
+    build: .
+    container_name: taskgraph-celery-worker
+    command: celery -A app.core.celery_app:celery_app worker --loglevel=info
+    environment:
+      - INTERNAL_SECRET=test_secret
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: always
