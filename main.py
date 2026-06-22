@@ -15,10 +15,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
-        openapi_url="/openapi.json" if settings.debug else None,
-        servers=[
-            {"url": "http://localhost:8000", "description": "Local development"},
-        ],
+        openapi_url="/openapi.json" if settings.debug else None
     )
 
     origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
