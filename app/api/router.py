@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 
 from app.api import health
-from app.api.v1 import router as v1_router
+from app.api.v1 import ai
 
 router = APIRouter()
 router.include_router(health.router, tags=["Health"])
-router.include_router(v1_router.router, prefix="/api/v1")
+router.include_router(ai.router, prefix="/api/v1")
