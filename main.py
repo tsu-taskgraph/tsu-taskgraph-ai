@@ -13,11 +13,11 @@ def create_app() -> FastAPI:
     fastapi_app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url="/api/v1/ai/docs",
+        redoc_url="/api/v1/ai/redoc",
+        openapi_url="/api/v1/ai/openapi.json",
         servers=[
-            {"url": "http://localhost:8000", "description": "Local development"},
+            {"url": "/", "description": "Production via nginx"},
         ],
     )
 
